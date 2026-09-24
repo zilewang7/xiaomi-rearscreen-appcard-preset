@@ -1,0 +1,17 @@
+# GitHub 加速镜像列表 / GitHub acceleration mirrors
+#
+# 最终 URL 由模板展开，支持的占位符：
+#   {url}    = 完整的原始地址（https://raw.githubusercontent.com/<repo>/<commit>/<path>）
+#   {repo}   = <owner>/<name>
+#   {commit} = 上游 commit
+#   {path}   = 资源相对路径
+#
+# 直连 github 永远优先，本列表仅在直连失败时按顺序回退。
+# 修改本文件即可让所有已安装模块在下次联网时自动生效（无需重新发版）。
+# 格式：每行一个模板；# 开头或空行忽略。
+
+https://ghproxy.net/{url}
+https://gh-proxy.com/{url}
+https://ghfast.top/{url}
+https://gh.xxooo.cf/{url}
+https://cdn.jsdelivr.net/gh/{repo}@{commit}/{path}

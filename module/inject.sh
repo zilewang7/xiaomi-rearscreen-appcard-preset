@@ -1,63 +1,52 @@
 #!/system/bin/sh
 # ============================================================================
-# RearScreen AppCard Preset — 注入脚本
+# 开机执行：确保资源就绪 + 挂载预置卡目录（幂等）
 #
-# 作用：把模块自带的预置应用卡注入到系统路径
-#       /system/media/rearscreen/appcard/  （真实路径 /product/media/rearscreen，
-#       因为 /system/media 是指向 /product/media 的软链）
+# 三个阶段共用本脚本（构建时复制为 post-fs-data.sh / service.sh / boot-completed.sh）：
+#   post-fs-data   — 最早，但此时无网络，仅尝试挂载
+#   service        — 网络可用，资源缺失时在此补下载
+#   boot-completed — 兜底
 #
-# 为什么用脚本而不是模块文件挂载：
-#   新版 APatch 把「模块文件挂载」委托给 metamodule（/data/adb/metamodule），
-#   未安装 metamodule 时不会挂载任何模块文件；
-#   但 apd 仍会在 post-fs-data / service / boot-completed 三个阶段执行
-#   各模块目录下同名的 .sh 脚本（apd/src/module.rs::exec_stage_script）。
-#   因此这里自己完成 bind mount —— 与 reqable-magisk 处理 Android 14+
-#   cacerts 的做法是同一模式。
-#
-# 本脚本是幂等的，三个阶段共用同一份。
+# 为什么不依赖 root 方案自己挂载模块文件：
+#   APatch 把「模块文件挂载」委托给 metamodule（/data/adb/metamodule），很多机器没装，
+#   于是模块文件根本不会被挂载；而模块目录下的阶段脚本一定会被执行。
+#   所以在脚本里自行 bind mount，兼容 APatch / Magisk / KernelSU。
 # ============================================================================
 
 MODDIR=${0%/*}
-[ -d "$MODDIR/product/media/rearscreen" ] || MODDIR=/data/adb/modules/reareye_appcard_preset
+[ -d "$MODDIR/product/media/rearscreen" ] || MODDIR=/data/adb/modules/rearscreen_appcard_preset
 
+STAGE=${0##*/}
 SRC="$MODDIR/product/media/rearscreen"
 DST=/system/media/rearscreen
 MARK="$DST/appcard/default/rearScreen.json"
-LOG=/data/local/tmp/reareye_appcard_preset.log
+LOG=/data/local/tmp/rearscreen_appcard_preset.log
 
-log() { echo "[$(date '+%F %T')] $*" >> "$LOG" 2>/dev/null; }
+log() { echo "[$(date '+%F %T')] $STAGE: $*" >> "$LOG" 2>/dev/null; }
 
-log "stage=${0##*/} start uid=$(id -u)"
+# 1) 已生效 → 退出（脚本已跑过，或已装 metamodule 由它挂载）
+[ -e "$MARK" ] && { log "已挂载，跳过"; exit 0; }
 
-# 1) 已生效则退出（脚本已跑过，或将来装了 metamodule 由它挂载）
-if [ -e "$MARK" ]; then
-    log "already present, skip"
-    exit 0
+# 2) 资源缺失 → 联网补下载（post-fs-data 阶段无网络，交给后续阶段）
+if [ ! -f "$SRC/appcard/default/rearScreen.json" ]; then
+    [ "$STAGE" = "post-fs-data.sh" ] && { log "资源缺失；post-fs-data 无网络，等 service 阶段"; exit 0; }
+    log "资源缺失，尝试补下载"
+    . "$MODDIR/lib.sh"
+    fetch_assets "$MODDIR/$MANIFEST_NAME" "$SRC" "$MODDIR/mirrors.txt" >> "$LOG" 2>&1 \
+        || { log "下载失败，下次开机再试"; exit 1; }
 fi
 
-# 2) 等待目标分区与源目录就绪
+# 3) 等目标路径就绪
 i=0
-while [ "$i" -lt 120 ]; do
-    [ -d "$DST" ] && [ -d "$SRC" ] && break
-    sleep 1
-    i=$((i + 1))
-done
-if [ ! -d "$DST" ] || [ ! -d "$SRC" ]; then
-    log "path not ready: DST=$([ -d "$DST" ] && echo ok || echo miss) SRC=$([ -d "$SRC" ] && echo ok || echo miss)"
-    exit 1
-fi
+while [ "$i" -lt 60 ]; do [ -d "$DST" ] && break; sleep 1; i=$((i + 1)); done
+[ -d "$DST" ] || { log "目标路径 $DST 未就绪"; exit 1; }
 
-# 3) 修正 SELinux 上下文，否则 untrusted_app 无法读取
+# 4) 修正 SELinux 上下文（否则 untrusted_app 读不到 → 表现为「挂上了但卡片不出现」）
 chcon -R u:object_r:system_file:s0 "$SRC" 2>>"$LOG"
 
-# 4) bind mount
+# 5) bind mount
 mount --bind "$SRC" "$DST" 2>>"$LOG"
-rc=$?
 
-if [ -e "$MARK" ]; then
-    log "MOUNT OK (rc=$rc)"
-    exit 0
-fi
-
-log "MOUNT FAILED (rc=$rc)"
+[ -e "$MARK" ] && { log "挂载成功"; exit 0; }
+log "挂载失败"
 exit 1
