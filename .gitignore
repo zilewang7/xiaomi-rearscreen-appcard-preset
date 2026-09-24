@@ -1,0 +1,12 @@
+# 上游预置包（安装时下载，不入库）
+*.rpp
+reareye-presets-*.rpp*
+
+# 抓包/日志（可能含账号信息，务必脱敏后再提交）
+*.log
+capture*.json
+*server-response*.json
+
+# 产物
+build/
+dist/
