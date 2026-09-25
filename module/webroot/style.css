@@ -1,0 +1,284 @@
+/* ==========================================================================
+   背屏应用卡中心 · 状态面板
+   深色优先，跟随系统；紧凑但可读
+   ========================================================================== */
+
+:root {
+    --bg:        #0f1115;
+    --bg-card:   #181b22;
+    --bg-sub:    #1f232c;
+    --fg:        #e8eaed;
+    --fg-dim:    #9aa0aa;
+    --fg-faint:  #6b7280;
+    --line:      #262a33;
+    --accent:    #4f8cff;
+
+    --ok:        #34d399;
+    --ok-bg:     rgba(52, 211, 153, .10);
+    --warn:      #fbbf24;
+    --warn-bg:   rgba(251, 191, 36, .10);
+    --fail:      #f87171;
+    --fail-bg:   rgba(248, 113, 113, .10);
+    --info:      #8b93a1;
+    --info-bg:   rgba(139, 147, 161, .08);
+
+    --radius:    14px;
+    --radius-sm: 10px;
+}
+
+@media (prefers-color-scheme: light) {
+    :root {
+        --bg:       #f4f5f7;
+        --bg-card:  #ffffff;
+        --bg-sub:   #f0f2f5;
+        --fg:       #16181d;
+        --fg-dim:   #5b6270;
+        --fg-faint: #8b93a1;
+        --line:     #e4e7ec;
+        --accent:   #2563eb;
+        --ok:       #059669;
+        --warn:     #b45309;
+        --fail:     #dc2626;
+        --info:     #6b7280;
+    }
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.55 -apple-system, "MiSans", "PingFang SC",
+          "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
+    -webkit-text-size-adjust: 100%;
+}
+
+body {
+    /* 底部留白由 app.js 按 dock 实际高度动态设置，这里给个兜底值 */
+    padding: max(14px, env(safe-area-inset-top)) 14px
+             calc(104px + env(safe-area-inset-bottom)) 14px;
+}
+
+/* ---------------------------------------------------------------- 头部 */
+.hero {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 12px;
+}
+
+.hero-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.hero h1 {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 650;
+    letter-spacing: .2px;
+}
+
+.hero .ver {
+    margin-top: 3px;
+    font-size: 12.5px;
+    color: var(--fg-faint);
+}
+
+.badge {
+    flex: none;
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 5px 11px;
+    border-radius: 999px;
+    white-space: nowrap;
+    background: var(--info-bg);
+    color: var(--info);
+}
+.badge.ok   { background: var(--ok-bg);   color: var(--ok); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.fail { background: var(--fail-bg); color: var(--fail); }
+.badge.busy { background: var(--info-bg); color: var(--fg-dim); }
+
+.hero .meta {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    font-size: 12.5px;
+    color: var(--fg-dim);
+}
+.hero .meta b { color: var(--fg); font-weight: 550; }
+
+/* ---------------------------------------------------------------- 分组 */
+.section { margin-bottom: 12px; }
+
+.section > h2 {
+    margin: 0 0 7px 3px;
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: .6px;
+    color: var(--fg-faint);
+    text-transform: none;
+}
+
+.item {
+    display: flex;
+    gap: 11px;
+    padding: 11px 13px;
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    margin-bottom: 6px;
+}
+
+.item:last-child { margin-bottom: 0; }
+
+.item .dot {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    margin-top: 1px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+}
+.item.ok   .dot { background: var(--ok-bg);   color: var(--ok); }
+.item.warn .dot { background: var(--warn-bg); color: var(--warn); }
+.item.fail .dot { background: var(--fail-bg); color: var(--fail); }
+.item.info .dot { background: var(--info-bg); color: var(--info); }
+
+.item .body { flex: 1; min-width: 0; }
+
+.item .t {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: .1px;
+}
+
+.item .d {
+    margin-top: 2px;
+    font-size: 12.5px;
+    color: var(--fg-dim);
+    word-break: break-word;
+}
+
+.item .fix {
+    margin-top: 7px;
+    padding: 7px 10px;
+    font-size: 12.5px;
+    border-radius: 8px;
+    background: var(--bg-sub);
+    color: var(--fg);
+    border-left: 2px solid var(--accent);
+    word-break: break-word;
+}
+
+.item .icon {
+    flex: none;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    object-fit: cover;
+    background: var(--bg-sub);
+}
+
+/* ---------------------------------------------------------------- 底部操作 */
+.dock {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    padding: 9px 12px calc(9px + env(safe-area-inset-bottom)) 12px;
+    background: color-mix(in srgb, var(--bg) 90%, transparent);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-top: 1px solid var(--line);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    z-index: 50;
+}
+
+button {
+    flex: 1 1 auto;
+    min-width: 82px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 550;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--bg-card);
+    color: var(--fg);
+    cursor: pointer;
+    transition: opacity .12s, transform .06s;
+}
+button:active { transform: scale(.975); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary {
+    background: var(--accent);
+    border-color: transparent;
+    color: #fff;
+}
+
+/* ---------------------------------------------------------------- 杂项 */
+.empty, .err {
+    padding: 22px 16px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--fg-dim);
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+}
+.err { color: var(--fail); }
+
+.spinner {
+    display: inline-block;
+    width: 13px; height: 13px;
+    border: 2px solid var(--fg-faint);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    vertical-align: -2px;
+    margin-right: 6px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 顶部提示条（toast 替代，WebView 里 toast 不一定有） */
+#toast {
+    position: fixed;
+    left: 50%;
+    bottom: calc(84px + env(safe-area-inset-bottom));
+    transform: translateX(-50%) translateY(10px);
+    max-width: 88%;
+    padding: 10px 16px;
+    border-radius: 11px;
+    background: var(--bg-sub);
+    border: 1px solid var(--line);
+    color: var(--fg);
+    font-size: 13px;
+    text-align: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s, transform .2s;
+    z-index: 99;
+}
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+.hint {
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--fg-faint);
+    text-align: center;
+    line-height: 1.7;
+}

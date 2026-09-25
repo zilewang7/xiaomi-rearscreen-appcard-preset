@@ -1,0 +1,9 @@
+# 卡片目录：分类|卡片名|依赖包名|最低版本号|资源路径
+# 由 tools/gen-catalog.py 从上游 preset 的 rearScreen.json 生成，勿手改。
+# status.sh 逐行读取，用来判断「这张卡为什么没出现」。
+天气日历|精选台历|com.android.calendar|180000040|appcard/normal/01_weather/calendar/rearscreen
+天气日历|临近日程|com.android.calendar|180000040|appcard/normal/01_weather/schedule/rearscreen
+实用工具|隐身模式|com.miui.securitycenter|0|appcard/normal/02_utility/privacy/rearscreen
+智能车家|米家摄像机|com.xiaomi.smarthome|11060500|appcard/normal/03_smart/home/rearscreen
+智能车家|小米汽车|com.mi.car.mobile|25102214|appcard/normal/03_smart/car/rearscreen
+生活服务|股票行情|com.miui.personalassistant|0|appcard/normal/04_lift/stock/rearscreen

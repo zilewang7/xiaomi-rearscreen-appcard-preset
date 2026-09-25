@@ -1,13 +1,23 @@
 #!/system/bin/sh
 # ============================================================================
-# 共享函数库：下载 / 校验 / 落盘
-# 被 customize.sh（安装时）与 inject.sh（开机兜底）source
+# 共享函数库：下载 / 校验 / 落盘 / 进度
+#
+# 被三处 source：
+#   customize.sh  安装时（有网络，尽量下完；但有时间预算，超时就收工不阻塞安装）
+#   inject.sh     开机 service / boot-completed 阶段（后台补齐）
+#   status.sh     诊断页复用常量与校验函数
 #
 # 下载策略（按序回退）：
-#   1. 直连 GitHub（海外用户 / 有代理的用户首选，也避免与上游脱轨）
-#   2. 镜像列表（国内可达的加速站）
-#   3. 镜像列表本身可远程更新，见 refresh_mirrors()
-# 每个文件都校验 SHA-256；全部通过才算成功。
+#   1. 直连 GitHub    —— 海外用户 / 有代理的用户首选，也避免与上游脱轨
+#   2. 镜像列表       —— 国内可达的加速站
+#   3. 列表本身可远程更新，见 refresh_mirrors()
+#
+# 健壮性要点（对应社区反馈「安装卡住」）：
+#   · 每个请求都有 --max-time 上限，绝不无限等待
+#   · 整体有时间预算，超预算立即收工，剩余交给开机后台补，绝不阻塞安装
+#   · 多线程并发（延迟敏感场景快数倍）
+#   · 连续失败且零成功 → 判定网络不可达，立刻放弃，不让无网用户干等
+#   · 每个文件都校验 SHA-256，校验不过就删掉换源重下
 # ============================================================================
 
 # ---- 上游资源（不随仓库分发，运行时拉取）----------------------------------
@@ -17,24 +27,59 @@ UPSTREAM_PATH="preset/rear_preset"
 RAW_BASE="https://raw.githubusercontent.com/${UPSTREAM_REPO}/${UPSTREAM_COMMIT}/${UPSTREAM_PATH}"
 
 MANIFEST_NAME="appcard.manifest"
+CATALOG_NAME="appcard.catalog"
 
 # ---- 镜像列表：可远程更新 --------------------------------------------------
-# 优先用缓存的远程列表，其次用模块内置的 mirrors.txt
 SELF_REPO="zilewang7/xiaomi-rearscreen-appcard-preset"
 MIRROR_LIST_URL="https://raw.githubusercontent.com/${SELF_REPO}/main/mirrors.txt"
 MIRROR_CACHE=/data/local/tmp/rearscreen_appcard_mirrors.txt
 MIRROR_CACHE_MAX_AGE=604800   # 秒，7 天
 
+# ---- 网络预算 --------------------------------------------------------------
+FETCH_CONNECT_TIMEOUT=6      # 单次连接超时（秒）
+FETCH_MAX_TIME=25            # 单文件总时长上限（秒），超时立即换下一个源
+FETCH_JOBS=4                 # 并发数
+INSTALL_BUDGET=100           # 安装阶段总预算（秒），超了留给开机后台补
+
+# 全局截止时刻（epoch 秒）；0 表示不限。由 fetch_assets 设置，子 shell 继承。
+_DEADLINE=0
+
+_has_budget() {
+    [ "$_DEADLINE" -eq 0 ] && return 0
+    [ "$(date +%s)" -lt "$_DEADLINE" ]
+}
+
 log() { echo "[appcard] $*"; }
+
+# ---------------------------------------------------------------- 活动日志
+LOGFILE=/data/local/tmp/rearscreen_appcard_preset.log
+
+# 开机早期系统时钟还没同步，date 会给出 1970 年，那种时间戳没法读。
+# 这时改用 uptime，至少能看出「开机第几秒发生的事」。
+_now() {
+    case "$(date +%Y 2>/dev/null)" in
+        19*|200*|201*|202[0-4])
+            up=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+            echo "开机+${up:-?}s" ;;
+        *)
+            date '+%F %T' 2>/dev/null ;;
+    esac
+}
+
+xlog() {  # $1=来源 $2=消息
+    echo "[$(_now)] $1: $2" >> "$LOGFILE" 2>/dev/null
+}
 
 # ---------------------------------------------------------------- 单次抓取
 _fetch() {  # $1=url $2=out
+    _has_budget || return 1
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 10 --retry 1 -o "$2" "$1" 2>/dev/null
+        curl -fsSL --connect-timeout "$FETCH_CONNECT_TIMEOUT" --max-time "$FETCH_MAX_TIME" \
+             -o "$2" "$1" 2>/dev/null
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 30 -O "$2" "$1" 2>/dev/null
+        wget -q -T "$FETCH_MAX_TIME" -O "$2" "$1" 2>/dev/null
     elif command -v busybox >/dev/null 2>&1; then
-        busybox wget -q -T 30 -O "$2" "$1" 2>/dev/null
+        busybox wget -q -T "$FETCH_MAX_TIME" -O "$2" "$1" 2>/dev/null
     else
         return 1
     fi
@@ -62,8 +107,12 @@ _mirror_lines() {  # $1=列表文件
     grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -v '^[[:space:]]*$'
 }
 
+# 当前生效的镜像列表：优先远程缓存，其次模块内置
+_mirror_list() {  # $1=内置 mirrors.txt
+    if [ -f "$MIRROR_CACHE" ]; then echo "$MIRROR_CACHE"; else echo "$1"; fi
+}
+
 # ---------------------------------------------------------------- 列表刷新
-# 用「直连 + 内置列表」去尝试拉取最新的 mirrors.txt，成功则缓存
 refresh_mirrors() {  # $1=模块内置 mirrors.txt 路径
     bundled="$1"
 
@@ -72,9 +121,8 @@ refresh_mirrors() {  # $1=模块内置 mirrors.txt 路径
         [ "$age" -lt "$MIRROR_CACHE_MAX_AGE" ] && return 0
     fi
 
-    for url in "$MIRROR_LIST_URL" $(for t in $(_mirror_lines "$bundled"); do _expand "$t" "" ; done 2>/dev/null); do
+    for url in "$MIRROR_LIST_URL" $(for t in $(_mirror_lines "$bundled"); do _expand "$t" ""; done 2>/dev/null); do
         [ -n "$url" ] || continue
-        # 列表文件自身用 _expand 后可能带路径占位为空的尾巴，做个兜底
         case "$url" in *'{'*) continue ;; esac
         if _fetch "$url" "$MIRROR_CACHE.tmp" && grep -q '{url}' "$MIRROR_CACHE.tmp" 2>/dev/null; then
             mv "$MIRROR_CACHE.tmp" "$MIRROR_CACHE"
@@ -87,21 +135,17 @@ refresh_mirrors() {  # $1=模块内置 mirrors.txt 路径
 }
 
 # ---------------------------------------------------------------- 带回退下载
-# $1=相对路径  $2=输出  $3=模块内置 mirrors.txt
-download() {
+# 直连 → 各镜像，成功 0 / 失败 1
+download() {  # $1=相对路径 $2=输出 $3=模块内置 mirrors.txt
     rel="$1"; out="$2"; bundled="$3"
 
-    # 1) 直连
     if _fetch "${RAW_BASE}/${rel}" "$out"; then
         return 0
     fi
 
-    # 2) 镜像（优先远程列表，其次内置）
-    list="$bundled"
-    [ -f "$MIRROR_CACHE" ] && list="$MIRROR_CACHE"
-
-    for tpl in $(_mirror_lines "$list"); do
+    for tpl in $(_mirror_lines "$(_mirror_list "$bundled")"); do
         url=$(_expand "$tpl" "$rel")
+        case "$url" in *'{'*) continue ;; esac
         if _fetch "$url" "$out"; then
             log "  已通过镜像获取：${url%%/https*}"
             return 0
@@ -111,42 +155,146 @@ download() {
     return 1
 }
 
+# ---------------------------------------------------------------- 单文件任务
+# 下载 + 校验，失败换源重试一轮；成功 0
+_fetch_one() {  # $1=sha $2=rel $3=dest $4=bundled
+    sha="$1"; rel="$2"; dest="$3"; bundled="$4"
+    out="$dest/$rel"
+
+    [ -f "$out" ] && [ "$(_sha256 "$out")" = "$sha" ] && return 0
+
+    mkdir -p "$(dirname "$out")"
+
+    attempt=0
+    while [ "$attempt" -lt 2 ]; do
+        attempt=$((attempt + 1))
+        if download "$rel" "$out" "$bundled"; then
+            [ "$(_sha256 "$out")" = "$sha" ] && return 0
+            log "    ✗ $rel 校验不符，换源重试"
+        fi
+        rm -f "$out"
+    done
+    return 1
+}
+
 # ---------------------------------------------------------------- 拉取全部
-# $1=清单  $2=目标根目录（其下含 appcard/…）  $3=内置 mirrors.txt
+# $1=清单 $2=目标根 $3=内置 mirrors.txt $4=并发数 $5=时间预算秒(0=不限)
+# 全部就绪返回 0；有缺失返回 1（不算致命，开机后台会补）
 fetch_assets() {
     manifest="$1"; dest="$2"; bundled="$3"
+    jobs="${4:-$FETCH_JOBS}"
+    budget="${5:-0}"
 
     [ -f "$manifest" ] || { log "错误：找不到清单 $manifest"; return 1; }
 
     total=$(grep -c . "$manifest")
-    idx=0; failed=0
 
+    case "$budget" in ''|*[!0-9]*) budget=0 ;; esac
+    if [ "$budget" -gt 0 ]; then
+        _DEADLINE=$(( $(date +%s) + budget ))
+    else
+        _DEADLINE=0
+    fi
+
+    # 先数还差几个，都齐了就直接返回
+    missing=0
     while read -r sha size path; do
         [ -n "$path" ] || continue
-        idx=$((idx + 1))
-        out="$dest/$path"
-
-        # 已存在且校验通过 → 跳过（支持断点续传 / 重试）
-        if [ -f "$out" ] && [ "$(_sha256 "$out")" = "$sha" ]; then
-            continue
-        fi
-
-        mkdir -p "$(dirname "$out")"
-        log "  [$idx/$total] $path"
-        if ! download "$path" "$out" "$bundled"; then
-            log "    ✗ 所有源均不可达"
-            failed=$((failed + 1))
-            continue
-        fi
-
-        if [ "$(_sha256 "$out")" != "$sha" ]; then
-            log "    ✗ SHA-256 校验失败，已删除"
-            rm -f "$out"
-            failed=$((failed + 1))
+        if [ ! -f "$dest/$path" ] || [ "$(_sha256 "$dest/$path")" != "$sha" ]; then
+            missing=$((missing + 1))
         fi
     done < "$manifest"
 
-    [ "$failed" -gt 0 ] && { log "$failed 个文件失败"; return 1; }
-    log "资源就绪：$total 个文件全部校验通过"
-    return 0
+    if [ "$missing" -eq 0 ]; then
+        log "资源就绪：$total/$total 个文件全部校验通过"
+        return 0
+    fi
+
+    log "需要下载 $missing/$total 个文件（并发 $jobs）"
+
+    work="/data/local/tmp/appcard_fetch_$$"
+    rm -rf "$work"; mkdir -p "$work"
+    # 轮流分片，避免某片全是难下的文件
+    awk -v n="$jobs" -v d="$work" 'NF { print > (d "/chunk_" (NR % n)) }' "$manifest"
+
+    j=0
+    while [ "$j" -lt "$jobs" ]; do
+        if [ -f "$work/chunk_$j" ]; then
+            (
+                ok=0; fail=0; consec=0; dead=0
+                while read -r sha size path; do
+                    [ -n "$path" ] || continue
+                    if ! _has_budget; then dead=2; break; fi
+                    if _fetch_one "$sha" "$path" "$dest" "$bundled"; then
+                        ok=$((ok + 1)); consec=0
+                    else
+                        fail=$((fail + 1)); consec=$((consec + 1))
+                        [ "$ok" -eq 0 ] && [ "$consec" -ge 3 ] && { dead=1; break; }
+                    fi
+                done < "$work/chunk_$j"
+                echo "$ok $fail $dead" > "$work/w_$j.stat"
+            ) &
+        fi
+        j=$((j + 1))
+    done
+    wait
+
+    ok=0; dead=0
+    j=0
+    while [ "$j" -lt "$jobs" ]; do
+        if [ -f "$work/w_$j.stat" ]; then
+            read -r a b c < "$work/w_$j.stat"
+            ok=$((ok + ${a:-0}))
+            [ "${c:-0}" = "1" ] && dead=1
+        fi
+        j=$((j + 1))
+    done
+
+    if [ "$dead" = "1" ] && [ "$ok" -eq 0 ]; then
+        log "网络不可达：直连与全部镜像都失败，已提前退出"
+        log "可开代理后重启设备，或在管理器点「操作」重试"
+        rm -rf "$work"
+        return 1
+    fi
+
+    # 最终逐文件复核
+    ready=0; bad=0
+    while read -r sha size path; do
+        [ -n "$path" ] || continue
+        if [ -f "$dest/$path" ] && [ "$(_sha256 "$dest/$path")" = "$sha" ]; then
+            ready=$((ready + 1))
+        else
+            bad=$((bad + 1))
+        fi
+    done < "$manifest"
+
+    rm -rf "$work"
+
+    if [ "$bad" -eq 0 ]; then
+        log "资源就绪：$ready/$total 个文件全部校验通过"
+        return 0
+    fi
+
+    if ! _has_budget; then
+        log "时间预算用尽：已就绪 $ready/$total，其余重启后自动补齐"
+    else
+        log "已就绪 $ready/$total，$bad 个暂未取到，重启后自动补齐"
+    fi
+    return 1
+}
+
+# ---------------------------------------------------------------- 进度查询
+# 输出「已就绪 总数」，供 status.sh 算进度
+assets_progress() {  # $1=清单 $2=资源根目录
+    manifest="$1"; dest="$2"
+    total=0; ready=0
+    [ -f "$manifest" ] || { echo "0 0"; return; }
+    while read -r sha size path; do
+        [ -n "$path" ] || continue
+        total=$((total + 1))
+        if [ -f "$dest/$path" ] && [ "$(_sha256 "$dest/$path")" = "$sha" ]; then
+            ready=$((ready + 1))
+        fi
+    done < "$manifest"
+    echo "$ready $total"
 }

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>背屏应用卡中心 · 状态</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="hero">
+    <div class="hero-top">
+        <div>
+            <h1>背屏应用卡中心</h1>
+            <div class="ver">RearScreen AppCard Preset</div>
+        </div>
+        <div class="badge busy" id="badge">检测中…</div>
+    </div>
+    <div class="meta" id="meta"></div>
+</div>
+
+<div id="sections">
+    <div class="empty"><span class="spinner"></span>正在检查模块状态…</div>
+</div>
+
+<div class="hint">
+    卡住了？先点「重新检测」。<br>
+    卡片不出现多半是配套 App 没装，看「卡片就绪度」那一栏。
+</div>
+
+<div class="dock">
+    <button id="btn-refresh" class="primary">重新检测</button>
+    <button id="btn-fetch">立即补齐资源</button>
+    <button id="btn-restart">重启卡中心</button>
+    <button id="btn-log">导出日志</button>
+    <button id="btn-copy">复制诊断</button>
+</div>
+
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
