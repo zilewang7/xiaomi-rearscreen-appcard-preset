@@ -12,6 +12,7 @@ MODDIR=${0%/*}
 [ -f "$MODDIR/module.prop" ] || MODDIR=/data/adb/modules/rearscreen_appcard_preset
 
 . "$MODDIR/lib.sh"
+ns_reexec "$@"
 
 MODVER=$(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null)
 

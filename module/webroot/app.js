@@ -123,7 +123,7 @@ function parseProtocol(text) {
 
         if (line === '@@') {
             if (cur) records.push(cur);
-            cur = { id: '', level: 'info', title: '', detail: '', fix: '', pkg: '' };
+            cur = { id: '', level: 'info', title: '', detail: '', fix: '', pkg: '', action: '' };
             return;
         }
         if (!cur) return;
@@ -154,10 +154,26 @@ const SECTIONS = [
 
 const MARK = { ok: '\u2713', warn: '!', fail: '\u2715', info: '\u00b7' };
 
+// 某些检查项光靠文字说不清，还得让用户去点别的地方 —— 那就直接在卡片上给个按钮。
+// status.sh 通过行协议里的 action=<id> 指定用哪个动作，这里查表执行。
+const ACTIONS = {
+    clear_reareye: {
+        label: '清除 REAREye 预设包',
+        busy: '清除中…',
+        hint: '再点一次就会删除 REAREye 的预设资源包（只删缓存，不动它的应用和设置）',
+        cmd: 'sh ' + q(MODDIR + '/clear-reareye.sh')
+    }
+};
+
 function esc(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
         return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
+}
+
+// 多行文本：先转义再把换行还原成 <br>，否则脚本输出会被挤成一长条
+function escNl(s) {
+    return esc(s).replace(/\n/g, '<br>');
 }
 
 function render(records) {
@@ -198,9 +214,18 @@ function render(records) {
             html += '<div class="t">' + esc(r.title) + '</div>';
             if (r.detail) html += '<div class="d">' + esc(r.detail) + '</div>';
             if (r.fix)    html += '<div class="fix">' + esc(r.fix) + '</div>';
+            if (r.action && ACTIONS[r.action]) {
+                html += '<button class="fixbtn" type="button">' +
+                        esc(ACTIONS[r.action].label) + '</button>';
+            }
             html += '</div>';
 
             el.innerHTML = html;
+
+            const ab = el.querySelector('button.fixbtn');
+            if (ab) {
+                ab.addEventListener('click', function () { runAction(r.action, ab); });
+            }
             div.appendChild(el);
         });
 
@@ -312,6 +337,70 @@ async function actRestartApp(btn) {
     await exec('am force-stop ' + PA_PKG);
     toast('已停止应用卡中心，打开背屏即会重新读取预设');
     setTimeout(function () { btn.disabled = false; }, 1200);
+}
+
+// 往列表最前面插一张结果卡（refresh 会把整棵 DOM 重画，所以要在 refresh 之后再插）
+function prependCard(title, detail, fix) {
+    const box = document.createElement('div');
+    box.className = 'item info';
+    box.innerHTML = '<div class="dot">\u00b7</div><div class="body">' +
+        '<div class="t">' + esc(title) + '</div>' +
+        (detail ? '<div class="d">' + escNl(detail) + '</div>' : '') +
+        (fix ? '<div class="fix">' + escNl(fix) + '</div>' : '') + '</div>';
+    const wrap = document.getElementById('sections');
+    wrap.insertBefore(box, wrap.firstChild);
+}
+
+// 执行 status.sh 用 action=<id> 指定的修复动作
+async function runAction(id, btn) {
+    const a = ACTIONS[id];
+    if (!a) return;
+
+    // 故意不用 window.confirm：弹不弹得出来取决于管理器有没有实现 onJsConfirm，
+    // 没实现的管理器会静默丢弃对话框，按钮看起来就「点了没反应」。
+    // 改成连点两次确认，只依赖 DOM，任何管理器都一样。
+    if (btn.dataset.armed !== '1') {
+        btn.dataset.armed = '1';
+        btn.textContent = '再点一次确认';
+        btn.classList.add('armed');
+        clearTimeout(btn._t);
+        btn._t = setTimeout(function () {
+            btn.dataset.armed = '';
+            btn.textContent = a.label;
+            btn.classList.remove('armed');
+        }, 8000);
+        showToast(a.hint || '再点一次确认');
+        return;
+    }
+
+    btn.dataset.armed = '';
+    clearTimeout(btn._t);
+    btn.classList.remove('armed');
+    btn.disabled = true;
+    btn.textContent = a.busy || '处理中…';
+
+    const res = await exec(a.cmd, 60000);
+    const out = (res.stdout || '').trim();
+    const ok = /\bRESULT=ok\b/.test(out);
+    const nothing = /\bRESULT=nothing\b/.test(out);
+
+    // 去掉给机器看的那行，剩下的原样给用户看
+    let lines = out.split('\n').filter(function (l) {
+        return l.indexOf('RESULT=') !== 0;
+    });
+    // 脚本第一行是「已清除…：」这种标题，卡片标题已经说了，去掉免得重复
+    if (lines.length > 1) lines = lines.slice(1);
+    const human = lines.join('\n').trim();
+
+    await refresh(true);
+
+    prependCard(
+        ok ? '已清除 REAREye 预设包' : (nothing ? '无需清除' : '清除失败'),
+        human || (ok ? 'REAREye 的重定向钩子已失效' : '请导出日志反馈'),
+        ok ? '重启手机后打开背屏即可看到卡片' : ''
+    );
+    window.scrollTo(0, 0);   // 结果卡插在最上面，别让它落在屏幕外
+    showToast(ok ? '已清除，重启手机后生效' : (nothing ? '没有找到 REAREye 预设包' : '清除失败'));
 }
 
 async function actLogpack(btn) {

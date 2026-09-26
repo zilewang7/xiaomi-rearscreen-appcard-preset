@@ -16,6 +16,7 @@ MODDIR=${0%/*}
 [ -f "$MODDIR/module.prop" ] || MODDIR=/data/adb/modules/rearscreen_appcard_preset
 
 . "$MODDIR/lib.sh"
+ns_reexec "$@"
 
 STAMP=$(date '+%m%d-%H%M')
 OUTDIR=/sdcard/Download

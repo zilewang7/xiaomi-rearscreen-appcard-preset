@@ -193,6 +193,34 @@ body {
     background: var(--bg-sub);
 }
 
+/* 检查项自带的修复按钮：比底部操作栏更靠近问题，用户不用来回找 */
+.item .fixbtn {
+    margin-top: 9px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-family: inherit;
+    font-weight: 500;
+    color: #fff;
+    background: var(--accent);
+    border: 0;
+    border-radius: 9px;
+    cursor: pointer;
+}
+
+.item .fixbtn:active { opacity: .72; }
+
+/* 第一次点只是「上膛」：换成明确的确认文案，并压暗，提醒再点一次才真删 */
+.item .fixbtn.armed {
+    background: transparent;
+    color: var(--fail);
+    border: 1px solid var(--fail);
+}
+
+.item .fixbtn:disabled {
+    opacity: .55;
+    cursor: default;
+}
+
 /* ---------------------------------------------------------------- 底部操作 */
 .dock {
     position: fixed;

@@ -1,6 +1,6 @@
 id=rearscreen_appcard_preset
 name=RearScreen AppCard Preset
-version=0.2.1
-versionCode=3
+version=0.2.2
+versionCode=4
 author=zilewang7
 description=为小米 17 Pro / 17 Pro Max 背屏「应用卡中心」补上 ROM 缺失的预置卡：小米汽车、米家摄像机、股票行情、精选台历、临近日程、隐身模式。资源在安装时联网拉取并逐个校验 SHA-256，不随模块分发。内置状态面板与一键日志导出，排错不用求人。

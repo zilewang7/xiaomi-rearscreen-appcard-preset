@@ -21,6 +21,7 @@ MODDIR=${0%/*}
 [ -f "$MODDIR/module.prop" ] || MODDIR=/data/adb/modules/rearscreen_appcard_preset
 
 . "$MODDIR/lib.sh"
+ns_reexec "$@"
 
 MODE="${1:-}"
 
@@ -37,12 +38,12 @@ OUT=/data/local/tmp/.appcard_status_$$.txt
 : > "$OUT"
 
 # ------------------------------------------------------------------ 记录
-emit() {  # $1=id $2=level $3=title $4=detail $5=fix $6=pkg(可选，WebUI 用来显示应用图标)
-    printf '@@\nid=%s\nlevel=%s\ntitle=%s\ndetail=%s\nfix=%s\npkg=%s\n' \
+emit() {  # $1=id $2=level $3=title $4=detail $5=fix $6=pkg(可选，WebUI 显示应用图标) $7=action(可选，WebUI 显示修复按钮)
+    printf '@@\nid=%s\nlevel=%s\ntitle=%s\ndetail=%s\nfix=%s\npkg=%s\naction=%s\n' \
         "$1" "$2" "$3" \
         "$(printf '%s' "$4" | tr '\n\r\t' '   ')" \
         "$(printf '%s' "$5" | tr '\n\r\t' '   ')" \
-        "$6" >> "$OUT"
+        "$6" "${7:-}" >> "$OUT"
 }
 
 # 一次拿全所有包名+版本号（pm list 0.08s，逐个 pm dump 要 1.75s/个）
@@ -84,16 +85,35 @@ emit env.module ok "模块版本" "v$(sed -n 's/^version=//p' "$MODDIR/module.pr
 # 本模块挂上去的文件就再也不会被读到 —— 表现为「所有检查都通过，卡片就是不出现」。
 # 这坑很隐蔽，所以单独查、单独说。
 REAREYE_PKG=hk.uwu.reareye
-REAREYE_CACHE=/data/data/com.miui.personalassistant/cache/reareye-preset-pack
+# REAREye 用「被 hook 的那个应用」的 dataDir 作基准，而目标应用有三个，
+# 所以每个都要查 —— 只查应用卡中心会漏判（本模块曾因此误报“全绿”）。
+#   <dir>/<hash>/active.rpp 存在  → store.load() 真的会返回 true，钩子生效 = 已接管
+#   目录存在但没有 active.rpp     → 下载/校验没走完，还没接管，但随时会
+CONF_ACTIVE=""
+CONF_LEFTOVER=""
+for _p in com.xiaomi.subscreencenter com.android.thememanager com.miui.personalassistant; do
+    _d="/data/data/$_p/cache/reareye-preset-pack"
+    [ -d "$_d" ] || continue
+    CONF_LEFTOVER="$CONF_LEFTOVER$_p "
+    if ls "$_d"/*/active.rpp >/dev/null 2>&1; then
+        CONF_ACTIVE="$CONF_ACTIVE$_p "
+    fi
+done
 
-if [ -d "$REAREYE_CACHE" ]; then
+if [ -n "$CONF_ACTIVE" ]; then
     emit conf.reareye fail "REAREye 冲突" \
-        "REAREye 提交过预设包，已接管预置路径；本模块的文件不会被读取" \
-        "二选一：① 弃用本模块，用 REAREye 自带的「预设包」；② 在 REAREye 里清除预设包后重启，本模块即可生效"
+        "REAREye 已接管预置路径（${CONF_ACTIVE% }），本模块挂上去的文件不会被读取" \
+        "二选一：① 用 REAREye 自带的「预设资源包」，同时卸载本模块；② 点下面的按钮清除 REAREye 的预设资源包，重启后本模块即可生效" \
+        "" "clear_reareye"
+elif [ -n "$CONF_LEFTOVER" ]; then
+    emit conf.reareye warn "REAREye 残留" \
+        "发现未完成的预设资源包（${CONF_LEFTOVER% }），当前还没接管，但下载完成就会接管" \
+        "若卡片不出现，可点下面的按钮清除它，然后重启" \
+        "" "clear_reareye"
 elif pkg_installed "$REAREYE_PKG"; then
     emit conf.reareye warn "REAREye 已安装" \
-        "尚未提交预设包，当前不冲突；一旦启用预设包，本模块会立刻失效" \
-        "若卡片不出现，先去 REAREye 里确认没有启用预设包"
+        "没有提交过预设资源包，当前不冲突；一旦启用，本模块会立刻失效" \
+        "若卡片不出现，先去 REAREye → 关于 →「预设资源包」确认没有启用"
 else
     emit conf.reareye ok "冲突检测" "未安装 REAREye，无冲突" ""
 fi

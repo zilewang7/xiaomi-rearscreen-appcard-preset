@@ -112,6 +112,34 @@ txt 不用装解压软件、能直接粘到论坛、手机上就能预览。诊�
 装完之后状态页会显示「12/31，重启后会自动补齐」。宁可分两次做完，
 也不要让用户的安装界面卡在那儿。
 
+## 检查项自带的修复按钮
+
+有些问题光靠文字说不清 —— 用户得知道去哪儿点、点什么，而这一步恰恰最容易卡住
+（社区有人连导出的日志文件都找不到）。所以行协议多了一个可选字段：
+
+```
+action=<id>        # 可选，WebUI 据此在卡片里画一个修复按钮
+```
+
+`app.js` 里有一张 `ACTIONS` 表，把 id 映射到 `label / busy / hint / cmd`。
+`status.sh` 只在真的需要修复时才带上这个字段：
+
+```sh
+emit conf.reareye fail "REAREye 冲突" "$detail" "$fix" "" "clear_reareye"
+#                                                            ↑ 第 7 个参数
+```
+
+两个刻意的选择：
+
+**不用 `window.confirm`。** 弹不弹得出来取决于管理器有没有实现 `onJsConfirm`，
+没实现的会静默丢弃对话框 —— 按钮看起来就「点了没反应」。改成连点两次确认：
+第一次把按钮变成描边的红色「再点一次确认」并弹提示，6–8 秒内不点第二次就自动取消。
+只依赖 DOM，任何管理器行为一致。
+
+**动作必须是独立脚本，不是内联命令。** `clear-reareye.sh` 能单独在终端里跑、
+能自己 `sh -n` 检查、能自己输出人类可读的结果和一行给机器看的
+`RESULT=ok|nothing|fail`。前端只负责转述，不负责拼命令。
+
 ## 真机验证记录
 
 开发机：小米 17 Pro Max（popsicle），OS4.0.0.44.XPBCNXM，
@@ -124,3 +152,11 @@ APatch（管理器包名为 `me.yuki.folk`，FolkPatch）。
   `复制诊断` 在剪贴板不可用时落到 `/sdcard/Download/appcard-diagnose.txt`。
 - 一个坑：`WebUIActivity` 是 **not exported** 的，adb shell（uid 2000）拉不起来，
   得用 root（`su -c am start ...`）才能手动打开面板做测试。
+- **最大的坑**：WebUI 里 `exec` 跑在**隔离的 mount namespace** 里，
+  `/data/data` 只剩 3 个条目（正常 937 个），别的应用数据目录一律看不见。
+  后果是「冲突检测」静默返回「不冲突」，面板报绿 —— 用户看到的却还是没卡片。
+  已由 `lib.sh` 的 `ns_reexec()` 修正。详见 `docs/reareye-conflict.md`。
+  复现方法：在 WebUI 里 `ls /data/data | wc -l`，正常应该 ~937。
+- 排查这个坑时用了一个小技巧：往 `status.sh` 里临时插一行
+  `emit env.probe info ...` 把探针结果打到面板上。注意 id 必须以已注册的
+  section 前缀开头（`env.` / `conf.` / …），否则 `render()` 会把它过滤掉，什么都不显示。

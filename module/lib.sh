@@ -35,6 +35,36 @@ MIRROR_LIST_URL="https://raw.githubusercontent.com/${SELF_REPO}/main/mirrors.txt
 MIRROR_CACHE=/data/local/tmp/rearscreen_appcard_mirrors.txt
 MIRROR_CACHE_MAX_AGE=604800   # 秒，7 天
 
+# ---- mount namespace 修正 ---------------------------------------------------
+# 管理器 WebUI 里的 exec 是「管理器的子进程」，因此继承了 Android 给应用准备的
+# 隔离 mount namespace。在那个视图里 /data/data 只剩几个条目（真机实测只有
+# com.google.android.gms / com.xiaomi.aiservice / 管理器自己，而正常是 937 个），
+# 其它应用的数据目录**看起来根本不存在**。
+#
+# 后果很隐蔽：任何「去别的应用数据目录看一眼」的检查都会静默变成「没有」——
+# 包括 REAREye 冲突检测。状态页于是安静地报绿，用户却看不到卡片。
+# 这正是社区反馈「每一项都是绿的，但没卡片」的成因之一。
+#
+# 修正办法：发现视图被隔离就带 init 的 mount namespace 重跑自己。
+# 先验证 nsenter 真的有效（不同设备/内核对 -t 1 的处理不一样），再 exec，
+# 免得把脚本直接跑死。
+ns_reexec() {  # 用法：ns_reexec "$@"，放在脚本 source lib.sh 之后
+    [ -n "$APPCARD_NS_FIXED" ] && return 0
+    n=$(ls /data/data 2>/dev/null | wc -l)
+    [ "${n:-0}" -ge 100 ] && return 0          # 视图正常，无事发生
+    command -v nsenter >/dev/null 2>&1 || return 0
+
+    n2=$(nsenter -t 1 -m -- ls /data/data 2>/dev/null | wc -l)
+    [ "${n2:-0}" -ge 100 ] || return 0         # nsenter 也救不了，就算了
+
+    APPCARD_NS_FIXED=1
+    export APPCARD_NS_FIXED
+    exec nsenter -t 1 -m -- "$0" "$@"
+}
+
+# 视图是不是被隔离过（状态页可以据此提示用户）
+ns_was_isolated() { [ -n "$APPCARD_NS_FIXED" ] && echo 1 || echo 0; }
+
 # ---- 网络预算 --------------------------------------------------------------
 FETCH_CONNECT_TIMEOUT=6      # 单次连接超时（秒）
 FETCH_MAX_TIME=25            # 单文件总时长上限（秒），超时立即换下一个源
