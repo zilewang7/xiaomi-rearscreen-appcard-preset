@@ -121,15 +121,21 @@ fi
 # ============================================================ 3. 资源
 set -- $(assets_progress "$MODDIR/$MANIFEST_NAME" "$MOD_SRC")
 READY=${1:-0}; TOTAL=${2:-0}
-PERM_OUT=$(perm_issues "$MODDIR/$MANIFEST_NAME" "$MOD_SRC")
-PERMBAD=${PERM_OUT%%|*}
-PERM_DETAIL=${PERM_OUT#*|}
+PERMBAD=$(perm_issues "$MODDIR/$MANIFEST_NAME" "$MOD_SRC")
+PERM_DETAIL=""
+[ "${PERMBAD:-0}" -gt 0 ] && PERM_DETAIL=$(perm_detail "$MODDIR/$MANIFEST_NAME" "$MOD_SRC")
 
 if [ "$TOTAL" -eq 0 ]; then
     emit res.progress fail "资源完整性" "清单缺失或为空" \
         "重新刷入模块 zip；若仍失败请导出日志反馈"
-elif [ "$READY" -eq "$TOTAL" ] && [ "${PERMBAD:-0}" -eq 0 ]; then
-    emit res.progress ok "资源完整性" "$READY/$TOTAL 个文件全部校验通过，应用可读" ""
+elif [ "$READY" -eq "$TOTAL" ]; then
+    # 「文件都在」和「应用读得到」分开报：前者是下载问题，后者是权限问题，
+    # 混在一条里的话，只缺权限时这一行会整个消失，用户以为检查没做。
+    if [ "${PERMBAD:-0}" -eq 0 ]; then
+        emit res.progress ok "资源完整性" "$READY/$TOTAL 个文件全部校验通过，应用可读" ""
+    else
+        emit res.progress ok "资源完整性" "$READY/$TOTAL 个文件全部下载完成（权限问题见下一项）" ""
+    fi
 elif [ "$READY" -eq 0 ]; then
     emit res.progress fail "资源完整性" "0/$TOTAL，一个都没下载成功" \
         "网络连不上 GitHub 也连不上所有镜像：开代理或换 WiFi 后重启，会自动补齐"

@@ -373,15 +373,15 @@ _mode() { stat -c %a "$1" 2>/dev/null || echo '?'; }
 _o_readable() { case "$(_mode "$1")" in *[4567]) return 0 ;; *) return 1 ;; esac; }
 _o_xable()    { case "$(_mode "$1")" in *[1357]) return 0 ;; *) return 1 ;; esac; }
 
-# $1=清单 $2=资源根 → 输出 "<个数>|<前几条明细>"
-# 明细只能这样一起带出来：调用方必须用 $( )，而那是个子 shell，
-# 在里面赋值外面拿不到（第一版就踩了这个，明细永远是空的）。
-# 只沿着 $dest 以下的路径检查 —— 再往上（/data/adb 之类）应用本来就不走，
-# 查了反而会天天误报。
-perm_issues() {
+# 逐个扫清单，把「应用读不到」的条目一行一条打出来。
+#
+# 注意这里**只输出一条信息**，不拼「个数|明细」这种复合格式：
+# Android 的 /system/bin/sh 是 mksh，而 mksh 在参数展开的 pattern 里
+# 把 `|` 当**交替**处理 —— `${X%%|*}` 会匹配开头的空分支，直接得到空串。
+# 本地用 dash 测是好的，一到真机就被吃掉，踩过。
+_perm_scan() {
     manifest="$1"; dest="$2"
-    n=0; detail=""
-    [ -f "$manifest" ] || { echo "0|"; return; }
+    [ -f "$manifest" ] || return 0
 
     while read -r sha size path; do
         [ -n "$path" ] || continue
@@ -409,14 +409,15 @@ perm_issues() {
             fi
         fi
 
-        if [ -n "$why" ]; then
-            n=$((n + 1))
-            [ "$n" -le 3 ] && detail="$detail${path}（${why}） "
-        fi
+        [ -n "$why" ] && printf '%s（%s）\n' "$path" "$why"
     done < "$manifest"
-
-    echo "$n|$detail"
 }
+
+# $1=清单 $2=资源根 → 「应用读不到」的条目数
+perm_issues() { _perm_scan "$1" "$2" | wc -l | tr -d ' '; }
+
+# $1=清单 $2=资源根 → 前几条明细（压成一行，给状态页用）
+perm_detail() { _perm_scan "$1" "$2" | head -n 3 | tr '\n' ' '; }
 
 # $1=资源根 → 把整棵树摆正成「目录 755 / 文件 644」，返回修正后仍不对的数
 # 用逐条 chmod 而不是 chmod -R a+rX：X 的语义在 toybox / busybox / GNU 上一致，

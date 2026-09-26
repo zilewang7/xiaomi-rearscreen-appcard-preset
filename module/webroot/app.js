@@ -161,12 +161,20 @@ const ACTIONS = {
         label: '清除 REAREye 预设包',
         busy: '清除中…',
         hint: '再点一次就会删除 REAREye 的预设资源包（只删缓存，不动它的应用和设置）',
+        titleOk: '已清除 REAREye 预设包',
+        titleNothing: '无需清除',
+        titleFail: '清除失败',
+        fixOk: '重启手机后打开背屏即可看到卡片',
         cmd: 'sh ' + q(MODDIR + '/clear-reareye.sh')
     },
     fix_perms: {
         label: '修好资源权限',
         busy: '修复中…',
         hint: '再点一次就会把资源文件改成「应用也读得到」的权限',
+        titleOk: '已修好资源权限',
+        titleNothing: '权限本来就正常',
+        titleFail: '修复未完全成功',
+        fixOk: '已重启应用卡中心，打开背屏即可看到卡片',
         cmd: 'sh ' + q(MODDIR + '/fix-perms.sh')
     }
 };
@@ -404,13 +412,15 @@ async function runAction(id, btn) {
 
     await refresh(true);
 
+    // 标题必须按动作取 —— 写死成某一个动作的文案，另一个动作的结果卡就会
+    // 张冠李戴（修权限却写着「已清除 REAREye 预设包」）。真机上踩过。
     prependCard(
-        ok ? '已清除 REAREye 预设包' : (nothing ? '无需清除' : '清除失败'),
-        human || (ok ? 'REAREye 的重定向钩子已失效' : '请导出日志反馈'),
-        ok ? '重启手机后打开背屏即可看到卡片' : ''
+        ok ? (a.titleOk || '已完成') : (nothing ? (a.titleNothing || '无需处理') : (a.titleFail || '操作失败')),
+        human || (ok ? '已完成' : '请导出日志反馈'),
+        ok ? (a.fixOk || '') : ''
     );
     window.scrollTo(0, 0);   // 结果卡插在最上面，别让它落在屏幕外
-    showToast(ok ? '已清除，重启手机后生效' : (nothing ? '没有找到 REAREye 预设包' : '清除失败'));
+    showToast(ok ? '已完成' : (nothing ? '无需处理' : '操作失败'));
 }
 
 async function actLogpack(btn) {

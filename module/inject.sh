@@ -27,36 +27,27 @@ DST=/system/media/rearscreen
 MARK="$DST/appcard/default/rearScreen.json"
 SRC_MARK="$SRC/appcard/default/rearScreen.json"
 
-# ---------------------------------------------------------------- 1. 已生效就直接退出
-# 脚本可能跑过多次（三个阶段 + 手动触发），幂等处理
-if [ -e "$MARK" ]; then
-    DST_INO=$(stat -c '%d:%i' "$MARK" 2>/dev/null)
-    SRC_INO=$(stat -c '%d:%i' "$SRC_MARK" 2>/dev/null)
-    if [ -n "$DST_INO" ] && [ "$DST_INO" = "$SRC_INO" ]; then
-        # 挂载还在，但资源可能在上次开机后补齐过 —— bind mount 会直接看到新文件，无需重挂
-        set -- $(assets_progress "$MODDIR/$MANIFEST_NAME" "$SRC")
-        xlog "$STAGE" "已挂载（${1:-0}/${2:-0}），跳过"
-        exit 0
-    fi
-    xlog "$STAGE" "检测到预设存在但 inode 不一致，准备重新挂载"
-fi
+# ============================================================================
+# 步骤顺序是有讲究的：**先查资源与权限，再看挂载。**
+#
+# 之前是先判挂载、正常就 exit 0，结果「挂载还在」被当成了「一切正常」——
+# 资源不全 / 权限不对的机器每次开机都在第一段就退出了，
+# 后面的修复永远走不到。同一个错误（拿一个较弱的判据当「没问题」）在这个
+# 文件里出现了三次，所以现在把顺序反过来。
+# ============================================================================
 
-# ---------------------------------------------------------------- 2. 资源不齐则补齐
-# 判据**不能**只看「主文件在不在」。真机上就卡在这儿：rearScreen.json 在，
-# 于是这段被整个跳过 —— 后端的 8 个资源永远补不回来、600 权限的文件一直没人管，
-# 面板还显示「23/31，还差 8 个」，用户点了半天「立即补齐」也没用。
+# ---------------------------------------------------------------- 1. 资源与权限
 set -- $(assets_progress "$MODDIR/$MANIFEST_NAME" "$SRC")
 READY=${1:-0}; TOTAL=${2:-0}
-PERM_OUT=$(perm_issues "$MODDIR/$MANIFEST_NAME" "$SRC")
-PERMBAD=${PERM_OUT%%|*}
+PERMBAD=$(perm_issues "$MODDIR/$MANIFEST_NAME" "$SRC")
 
-# 2a. 权限：不需要网络，任何阶段都能修，而且这正是「文件都在却看不到卡片」的元凶
+# 1a. 权限：不需要网络，任何阶段都能修，而且这正是「文件都在却看不到卡片」的元凶
 if [ "$PERMBAD" -gt 0 ]; then
     PERM_LEFT=$(fix_perms "$SRC")
     xlog "$STAGE" "修正资源权限：$PERMBAD 个条目应用读不到，修正后剩 $PERM_LEFT"
 fi
 
-# 2b. 缺文件才需要联网
+# 1b. 缺文件才需要联网
 if [ ! -f "$SRC_MARK" ] || [ "$READY" -lt "$TOTAL" ]; then
     if [ "$STAGE" = "post-fs-data.sh" ]; then
         if [ ! -f "$SRC_MARK" ]; then
@@ -81,6 +72,20 @@ if [ ! -f "$SRC_MARK" ] || [ "$READY" -lt "$TOTAL" ]; then
             [ -f "$SRC_MARK" ] || exit 1
         fi
     fi
+fi
+
+# ---------------------------------------------------------------- 2. 已挂好就直接收工
+# 走到这里说明资源和权限都已经没问题了，这时「挂载还在且 inode 一致」才可以
+# 安心地当收工条件。脚本会跑很多次（三个阶段 + 手动触发），这条保证幂等。
+# bind mount 是活的：后面补进来的文件会自动可见，不需要重挂。
+if [ -e "$MARK" ]; then
+    DST_INO=$(stat -c '%d:%i' "$MARK" 2>/dev/null)
+    SRC_INO=$(stat -c '%d:%i' "$SRC_MARK" 2>/dev/null)
+    if [ -n "$DST_INO" ] && [ "$DST_INO" = "$SRC_INO" ]; then
+        xlog "$STAGE" "已挂载（$READY/$TOTAL）且权限正常，跳过"
+        exit 0
+    fi
+    xlog "$STAGE" "检测到预设存在但 inode 不一致，准备重新挂载"
 fi
 
 # ---------------------------------------------------------------- 3. 等目标路径就绪
