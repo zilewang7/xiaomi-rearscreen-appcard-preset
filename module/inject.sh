@@ -41,27 +41,45 @@ if [ -e "$MARK" ]; then
     xlog "$STAGE" "检测到预设存在但 inode 不一致，准备重新挂载"
 fi
 
-# ---------------------------------------------------------------- 2. 资源缺失则补齐
-if [ ! -f "$SRC_MARK" ]; then
+# ---------------------------------------------------------------- 2. 资源不齐则补齐
+# 判据**不能**只看「主文件在不在」。真机上就卡在这儿：rearScreen.json 在，
+# 于是这段被整个跳过 —— 后端的 8 个资源永远补不回来、600 权限的文件一直没人管，
+# 面板还显示「23/31，还差 8 个」，用户点了半天「立即补齐」也没用。
+set -- $(assets_progress "$MODDIR/$MANIFEST_NAME" "$SRC")
+READY=${1:-0}; TOTAL=${2:-0}
+PERM_OUT=$(perm_issues "$MODDIR/$MANIFEST_NAME" "$SRC")
+PERMBAD=${PERM_OUT%%|*}
+
+# 2a. 权限：不需要网络，任何阶段都能修，而且这正是「文件都在却看不到卡片」的元凶
+if [ "$PERMBAD" -gt 0 ]; then
+    PERM_LEFT=$(fix_perms "$SRC")
+    xlog "$STAGE" "修正资源权限：$PERMBAD 个条目应用读不到，修正后剩 $PERM_LEFT"
+fi
+
+# 2b. 缺文件才需要联网
+if [ ! -f "$SRC_MARK" ] || [ "$READY" -lt "$TOTAL" ]; then
     if [ "$STAGE" = "post-fs-data.sh" ]; then
-        # 此阶段确定无网络，别浪费开机时间
-        xlog "$STAGE" "资源缺失；post-fs-data 无网络，交给 service 阶段"
-        exit 0
-    fi
-
-    BUDGET=$INSTALL_BUDGET
-    [ "$STAGE" = "boot-completed.sh" ] && BUDGET=0      # 最后一班车，不限时
-
-    xlog "$STAGE" "资源缺失，开始补齐（预算 ${BUDGET}s）"
-    refresh_mirrors "$MODDIR/mirrors.txt" >> "$LOGFILE" 2>&1
-
-    if fetch_assets "$MODDIR/$MANIFEST_NAME" "$SRC" "$MODDIR/mirrors.txt" "$FETCH_JOBS" "$BUDGET" >> "$LOGFILE" 2>&1; then
-        xlog "$STAGE" "资源补齐完成"
+        if [ ! -f "$SRC_MARK" ]; then
+            # 主文件都没有，挂也没意义；此阶段确定无网络，别浪费开机时间
+            xlog "$STAGE" "主文件缺失；post-fs-data 无网络，交给 service 阶段"
+            exit 0
+        fi
+        xlog "$STAGE" "资源不全（$READY/$TOTAL），先挂上，service 阶段再补"
     else
-        set -- $(assets_progress "$MODDIR/$MANIFEST_NAME" "$SRC")
-        xlog "$STAGE" "资源仍未齐（${1:-0}/${2:-0}），下次开机再试"
-        # 只要主文件到位就先挂，卡片少几张也好过完全没有
-        [ -f "$SRC_MARK" ] || exit 1
+        BUDGET=$INSTALL_BUDGET
+        [ "$STAGE" = "boot-completed.sh" ] && BUDGET=0      # 最后一班车，不限时
+
+        xlog "$STAGE" "资源不全（$READY/$TOTAL），开始补齐（预算 ${BUDGET}s）"
+        refresh_mirrors "$MODDIR/mirrors.txt" >> "$LOGFILE" 2>&1
+
+        if fetch_assets "$MODDIR/$MANIFEST_NAME" "$SRC" "$MODDIR/mirrors.txt" "$FETCH_JOBS" "$BUDGET" >> "$LOGFILE" 2>&1; then
+            xlog "$STAGE" "资源补齐完成"
+        else
+            set -- $(assets_progress "$MODDIR/$MANIFEST_NAME" "$SRC")
+            xlog "$STAGE" "资源仍未齐（${1:-0}/${2:-0}），下次开机再试"
+            # 只要主文件到位就先挂，卡片少几张也好过完全没有
+            [ -f "$SRC_MARK" ] || exit 1
+        fi
     fi
 fi
 

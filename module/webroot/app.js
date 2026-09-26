@@ -162,6 +162,12 @@ const ACTIONS = {
         busy: '清除中…',
         hint: '再点一次就会删除 REAREye 的预设资源包（只删缓存，不动它的应用和设置）',
         cmd: 'sh ' + q(MODDIR + '/clear-reareye.sh')
+    },
+    fix_perms: {
+        label: '修好资源权限',
+        busy: '修复中…',
+        hint: '再点一次就会把资源文件改成「应用也读得到」的权限',
+        cmd: 'sh ' + q(MODDIR + '/fix-perms.sh')
     }
 };
 

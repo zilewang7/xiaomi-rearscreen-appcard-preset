@@ -121,18 +121,31 @@ fi
 # ============================================================ 3. 资源
 set -- $(assets_progress "$MODDIR/$MANIFEST_NAME" "$MOD_SRC")
 READY=${1:-0}; TOTAL=${2:-0}
+PERM_OUT=$(perm_issues "$MODDIR/$MANIFEST_NAME" "$MOD_SRC")
+PERMBAD=${PERM_OUT%%|*}
+PERM_DETAIL=${PERM_OUT#*|}
 
 if [ "$TOTAL" -eq 0 ]; then
     emit res.progress fail "资源完整性" "清单缺失或为空" \
         "重新刷入模块 zip；若仍失败请导出日志反馈"
-elif [ "$READY" -eq "$TOTAL" ]; then
-    emit res.progress ok "资源完整性" "$READY/$TOTAL 个文件全部校验通过" ""
+elif [ "$READY" -eq "$TOTAL" ] && [ "${PERMBAD:-0}" -eq 0 ]; then
+    emit res.progress ok "资源完整性" "$READY/$TOTAL 个文件全部校验通过，应用可读" ""
 elif [ "$READY" -eq 0 ]; then
     emit res.progress fail "资源完整性" "0/$TOTAL，一个都没下载成功" \
         "网络连不上 GitHub 也连不上所有镜像：开代理或换 WiFi 后重启，会自动补齐"
-else
+elif [ "$READY" -lt "$TOTAL" ]; then
     emit res.progress warn "资源完整性" "$READY/$TOTAL，还差 $((TOTAL - READY)) 个" \
         "重启后会自动补齐；也可点「立即补齐」"
+fi
+
+# 文件都在、但应用读不到 —— 这是「面板看着没问题、卡片就是不出现」的另一大元凶。
+# 注意这条检查必须用「别人能不能读」的判据，不能像 assets_progress 那样拿 root 去读：
+# root 读得到 0600 的文件，于是检查永远通过。
+if [ "${PERMBAD:-0}" -gt 0 ]; then
+    emit res.perm fail "资源权限" \
+        "$PERMBAD 个文件/目录应用读不到（root 读得到，背屏应用读不到）${PERM_DETAIL:+；如 $PERM_DETAIL}" \
+        "点下面的按钮就地修好，不用重启" \
+        "" "fix_perms"
 fi
 
 if [ -f "$MIRROR_CACHE" ]; then
@@ -177,6 +190,28 @@ if [ -e /system/media/rearscreen/appcard/default/rearScreen.json ]; then
 else
     emit inj.symlink fail "应用读取路径" "/system/media/rearscreen 读不到预设" \
         "/system/media 是指向 /product/media 的软链，读不到说明挂载点不对"
+fi
+
+# 上面所有检查都是「root 视角」。但应用有自己的 mount namespace（Android 给每个
+# 应用 unshare 一份），挂载如果发生在 zygote 分叉之后，应用那边根本看不到。
+# 所以最后真的进到应用进程的 namespace 里读一次 —— 这才是应用眼里的世界。
+# 顺带也能验 DAC：stat 用的是 root，验权限还得靠上面的 res.perm。
+PA_PID=$(pidof "$PA_PKG" 2>/dev/null | awk '{print $1}')
+if [ -n "$PA_PID" ] && command -v nsenter >/dev/null 2>&1; then
+    APP_INO=$(nsenter -t "$PA_PID" -m -- stat -c '%d:%i' "$MARK" 2>/dev/null)
+    SRC_INO2=$(stat -c '%d:%i' "$SRC_MARK" 2>/dev/null)
+    if [ -z "$APP_INO" ]; then
+        emit inj.appns warn "应用视角" "进不去应用进程的 namespace，无法确认应用看到的是哪份文件" \
+            "不影响使用；若卡片不出现，重启设备后本项会重新检测"
+    elif [ "$APP_INO" = "$SRC_INO2" ]; then
+        emit inj.appns ok "应用视角" "应用卡中心（pid $PA_PID）读到的就是本模块的文件" ""
+    else
+        emit inj.appns fail "应用视角" \
+            "应用卡中心读到的**不是**本模块的文件（应用 inode $APP_INO / 模块 inode $SRC_INO2）" \
+            "挂载没进到应用的 mount namespace：重启设备（挂载要在 zygote 之前完成）"
+    fi
+elif [ -z "$PA_PID" ]; then
+    emit inj.appns info "应用视角" "应用卡中心未运行，跳过（打开背屏后再检测）" ""
 fi
 
 if [ -f "$INJ_LOG" ]; then

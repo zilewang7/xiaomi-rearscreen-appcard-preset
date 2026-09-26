@@ -140,6 +140,77 @@ emit conf.reareye fail "REAREye 冲突" "$detail" "$fix" "" "clear_reareye"
 能自己 `sh -n` 检查、能自己输出人类可读的结果和一行给机器看的
 `RESULT=ok|nothing|fail`。前端只负责转述，不负责拼命令。
 
+## 「文件在不在」和「应用读不读得到」是两件事
+
+这是本项目踩得最深的一个坑，值得单独说。
+
+资源检查原本是这样的：
+
+```sh
+if [ -f "$dest/$path" ] && [ "$(_sha256 "$dest/$path")" = "$sha" ]; then
+    ready=$((ready + 1))
+fi
+```
+
+以 **root** 身份跑，逐文件比 SHA-256。看起来无懈可击 —— 直到有人的状态页显示
+「23/31 就绪」，卡片却一张都不出现。
+
+真机取证（KernelSU bugreport 里的 `ls -laZ`）发现，那 23 个「就绪」的文件里有 8 个是：
+
+```
+-rw------- 1 root root  ...  normal/01_weather/calendar/preview/preview_rearscreen_0.png
+drwx------ 2 root root  ...  normal/04_lift/
+```
+
+**root 读得到，应用读不到。** 模块目录被 bind mount 到 `/product/media/rearscreen`，
+背屏应用是以自己的 uid（`u0_a140`，SELinux `platform_app_36`）去读的。
+DAC 权限 0600 root:root 对它就是 EACCES，跟 SELinux 无关，也不会有 AVC 日志。
+
+来源是 umask：`curl -o` 写出 `0666 & ~umask`，`mkdir -p` 写出 `0777 & ~umask`。
+**管理器的 WebUI exec 和部分开机脚本带 umask 077**，于是写出 0600 的文件和 0700 的目录。
+同一批资源里，安装时（umask 022）下的那几个是 0644，后来二次补齐（umask 077）下的就是 0600 ——
+时间戳一眼能看出来。
+
+三处修正：
+
+1. `lib.sh` 顶部显式 `umask 022`，不再指望环境。
+2. 每个文件下完立刻 `chmod 0644`，并把上层目录一路 `chmod 0755` 回去
+   （`mkdir -p` 建的中间目录也可能是 0700，只 chmod 文件本身不够）。
+3. `fix_perms()` 把整棵树扫一遍摆正；`inject.sh` 每次开机都跑，历史装坏的用户自动痊愈。
+
+以及**判据本身**要改。`assets_progress()` 用 root 读，永远回答不了「应用读不读得到」，
+所以新增 `perm_issues()`：不读内容，只看权限位 —— 文件要有 o+r，
+路径上每一层目录都要有 o+x（否则文件权限对也没用）。
+
+状态页于是多一条：
+
+```
+✗ 资源权限
+    8 个文件/目录应用读不到（root 读得到，背屏应用读不到）；
+    如 appcard/normal/04_lift/stock/rearscreen（文件 600）
+    → 点下面的按钮就地修好，不用重启
+    [ 修好资源权限 ]
+```
+
+> 第 N 次同一个教训：**检查本身也可能悄悄降级成「通过」。**
+> 这一次它降级的方式是「用了一个应用永远不会用的身份（root）去检查」。
+
+## 挂载也要用应用的视角验
+
+同一个思路还修了另一处：所有挂载检查都是 root 视角，但 **Android 给每个应用
+unshare 了一份 mount namespace**。如果 bind mount 发生在 zygote 分叉之后，
+应用那边看到的是 ROM 原文件 —— 状态页却全绿。
+
+所以加了一条 `inj.appns`：拿 `pidof` 找到应用卡中心的 pid，
+`nsenter -t <pid> -m -- stat` 进它的 namespace 里读一次，比对 inode。
+
+```sh
+APP_INO=$(nsenter -t "$PA_PID" -m -- stat -c '%d:%i' "$MARK")
+```
+
+这是唯一一条「以应用的视角」做的检查，也应该是所有模块检查的最终标准。
+（副作用：它也顺带证明了 `nsenter -t <pid> -m` 这条路是通的。）
+
 ## 真机验证记录
 
 开发机：小米 17 Pro Max（popsicle），OS4.0.0.44.XPBCNXM，

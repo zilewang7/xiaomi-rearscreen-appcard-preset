@@ -35,6 +35,18 @@ MIRROR_LIST_URL="https://raw.githubusercontent.com/${SELF_REPO}/main/mirrors.txt
 MIRROR_CACHE=/data/local/tmp/rearscreen_appcard_mirrors.txt
 MIRROR_CACHE_MAX_AGE=604800   # 秒，7 天
 
+# ---- umask：写出来的文件必须「应用也读得到」 --------------------------------
+# 模块目录会被 bind mount 到 /product/media/rearscreen，背屏应用是以**自己的 uid**
+# （u0_a140）去读的，不是 root。而 curl -o 写文件是 0666 & ~umask，
+# mkdir -p 是 0777 & ~umask —— 只要执行环境带了 umask 077，就会写出
+# 0600 的文件和 0700 的目录，应用直接 EACCES。
+#
+# 管理器的 WebUI exec 和部分开机脚本确实带 077（真机上踩过：资源「23/31 就绪」，
+# 面板全绿，卡片一张不显示；同一批文件里 23:02 下的那几个是 0644，
+# 23:06 二次补齐下的那几个是 0600 —— 两个上下文 umask 不一样）。
+# 这里显式钉死，另外 fix_perms() 会把整棵树的权限摆正，双保险。
+umask 022
+
 # ---- mount namespace 修正 ---------------------------------------------------
 # 管理器 WebUI 里的 exec 是「管理器的子进程」，因此继承了 Android 给应用准备的
 # 隔离 mount namespace。在那个视图里 /data/data 只剩几个条目（真机实测只有
@@ -199,12 +211,30 @@ _fetch_one() {  # $1=sha $2=rel $3=dest $4=bundled
     while [ "$attempt" -lt 2 ]; do
         attempt=$((attempt + 1))
         if download "$rel" "$out" "$bundled"; then
-            [ "$(_sha256 "$out")" = "$sha" ] && return 0
+            if [ "$(_sha256 "$out")" = "$sha" ]; then
+                # 显式摆正权限：不能指望执行环境的 umask 是 022（见文件顶部说明）
+                chmod 0644 "$out" 2>/dev/null
+                _chmod_up 0755 "$dest" "$(dirname "$out")"
+                return 0
+            fi
             log "    ✗ $rel 校验不符，换源重试"
         fi
         rm -f "$out"
     done
     return 1
+}
+
+# $1=权限 $2=停止目录 $3=起点目录 → 从起点一路往上 chmod，到停止目录为止
+# （mkdir -p 建出来的中间目录也可能是 0700，只 chmod 文件本身不够）
+_chmod_up() {
+    perm="$1"; stop="$2"; d="$3"
+    while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "." ]; do
+        chmod "$perm" "$d" 2>/dev/null
+        [ "$d" = "$stop" ] && break
+        nd=$(dirname "$d")
+        [ "$nd" = "$d" ] && break
+        d="$nd"
+    done
 }
 
 # ---------------------------------------------------------------- 拉取全部
@@ -300,6 +330,9 @@ fetch_assets() {
 
     rm -rf "$work"
 
+    # 整棵树权限摆正：下完之后统一来一次，比在每个下载点打补丁可靠
+    fix_perms "$dest" >/dev/null
+
     if [ "$bad" -eq 0 ]; then
         log "资源就绪：$ready/$total 个文件全部校验通过"
         return 0
@@ -327,4 +360,94 @@ assets_progress() {  # $1=清单 $2=资源根目录
         fi
     done < "$manifest"
     echo "$ready $total"
+}
+
+# ---------------------------------------------------------------- 权限
+# assets_progress 是拿 root 去读的，所以永远读得到 0600 的文件 —— 它只能回答
+# 「文件在不在」，回答不了「应用读不读得到」。这是两个不同的问题，
+# 而后者才是卡片出不出现的原因。下面这几个函数就是补上后者。
+
+_mode() { stat -c %a "$1" 2>/dev/null || echo '?'; }
+
+# 取权限的末位（others 那一位），判断「别人」能不能读 / 能不能进
+_o_readable() { case "$(_mode "$1")" in *[4567]) return 0 ;; *) return 1 ;; esac; }
+_o_xable()    { case "$(_mode "$1")" in *[1357]) return 0 ;; *) return 1 ;; esac; }
+
+# $1=清单 $2=资源根 → 输出 "<个数>|<前几条明细>"
+# 明细只能这样一起带出来：调用方必须用 $( )，而那是个子 shell，
+# 在里面赋值外面拿不到（第一版就踩了这个，明细永远是空的）。
+# 只沿着 $dest 以下的路径检查 —— 再往上（/data/adb 之类）应用本来就不走，
+# 查了反而会天天误报。
+perm_issues() {
+    manifest="$1"; dest="$2"
+    n=0; detail=""
+    [ -f "$manifest" ] || { echo "0|"; return; }
+
+    while read -r sha size path; do
+        [ -n "$path" ] || continue
+        f="$dest/$path"
+        [ -f "$f" ] || continue
+
+        why=""
+        _o_readable "$f" || why="文件 $(_mode "$f")"
+
+        # 路径上每一层目录都要能「进得去」，否则文件权限对也没用
+        if [ -z "$why" ]; then
+            _o_xable "$dest" || why="目录 $(_mode "$dest")"
+        fi
+        if [ -z "$why" ]; then
+            reldir=$(dirname "$path")
+            if [ "$reldir" != "." ]; then
+                cur="$dest"
+                for seg in $(printf '%s' "$reldir" | tr '/' ' '); do
+                    cur="$cur/$seg"
+                    if [ -d "$cur" ] && ! _o_xable "$cur"; then
+                        why="目录 $(_mode "$cur")"
+                        break
+                    fi
+                done
+            fi
+        fi
+
+        if [ -n "$why" ]; then
+            n=$((n + 1))
+            [ "$n" -le 3 ] && detail="$detail${path}（${why}） "
+        fi
+    done < "$manifest"
+
+    echo "$n|$detail"
+}
+
+# $1=资源根 → 把整棵树摆正成「目录 755 / 文件 644」，返回修正后仍不对的数
+# 用逐条 chmod 而不是 chmod -R a+rX：X 的语义在 toybox / busybox / GNU 上一致，
+# 但这里要的就是固定 755/644（和 ROM 原文件的权限一致），写死更可控。
+# 这个树里只有 json / png，没有可执行文件，不会被误伤。
+fix_perms() {
+    root="$1"
+    [ -d "$root" ] || { echo 0; return 0; }
+    chmod 0755 "$root" 2>/dev/null
+    command -v find >/dev/null 2>&1 || { count_unreadable "$root"; return 0; }
+    find "$root" 2>/dev/null | while IFS= read -r p; do
+        if [ -d "$p" ]; then chmod 0755 "$p" 2>/dev/null
+        else chmod 0644 "$p" 2>/dev/null
+        fi
+    done
+    count_unreadable "$root"
+}
+
+# $1=资源根 → 全树数「App 读不到的文件 / 进不去的目录」，用来验证修复结果。
+# 用 _o_readable/_o_xable 逐条判断，不依赖 find 的 -perm 谓词（各实现差异较大）。
+count_unreadable() {
+    root="$1"
+    [ -d "$root" ] || { echo 0; return 0; }
+    command -v find >/dev/null 2>&1 || { echo 0; return 0; }
+    n=0
+    for p in $(find "$root" 2>/dev/null); do
+        if [ -d "$p" ]; then
+            _o_xable "$p"    || n=$((n + 1))
+        elif [ -f "$p" ]; then
+            _o_readable "$p" || n=$((n + 1))
+        fi
+    done
+    echo "$n"
 }
