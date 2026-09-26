@@ -143,6 +143,7 @@ function parseProtocol(text) {
 // ------------------------------------------------------------------ 渲染
 const SECTIONS = [
     { key: 'env',    title: '运行环境' },
+    { key: 'conf',   title: '冲突检测' },
     { key: 'res',    title: '资源' },
     { key: 'inj',    title: '注入状态' },
     { key: 'pre',    title: '预设内容' },

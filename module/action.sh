@@ -29,16 +29,20 @@ echo "----------------------------------------------"
 echo " 正在生成日志包…"
 echo
 
-ZIP=$(sh "$MODDIR/logpack.sh" 2>/dev/null | tail -1)
+SAVED=$(sh "$MODDIR/logpack.sh" 2>/dev/null | tail -1)
 
-if [ -n "$ZIP" ] && [ "$ZIP" != "FAILED" ]; then
-    echo " 日志已保存到："
-    echo "   $ZIP"
+if [ -n "$SAVED" ] && [ "$SAVED" != "FAILED" ]; then
+    SIZE=$(stat -c '%s' "$SAVED" 2>/dev/null || echo 0)
+    echo " 日志已生成（$((SIZE / 1024)) KB）"
     echo
-    echo " 把上面这个文件发给开发者即可。"
+    echo " 位置：文件管理 → 内部存储 → Download"
+    echo " 文件名：$(basename "$SAVED")"
+    echo
+    echo " （完整路径：$SAVED）"
+    echo " 把这个文件发出来就行，不含账号信息。"
 else
-    echo " 日志打包失败。"
-    echo " 可以手动把下面两份发给开发者："
+    echo " 日志生成失败。"
+    echo " 请手动提供这两份："
     echo "   /data/local/tmp/rearscreen_appcard_preset.log"
     echo "   $MODDIR/product/media/rearscreen/appcard/default/rearScreen.json"
 fi

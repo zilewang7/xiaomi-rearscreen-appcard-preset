@@ -77,7 +77,28 @@ emit env.root info "Root 方案" "$ROOT_SCHEME；metamodule：$META" ""
 
 emit env.module ok "模块版本" "v$(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null)" ""
 
-# ============================================================ 2. 资源
+# ============================================================ 2. 冲突检测
+# REAREye 是另一个背屏增强模块（LSPosed）。它的 PresetPackFilesHook 会把
+# com.miui.personalassistant 对系统预置路径的所有访问（File.exists / FileInputStream /
+# Os.open / ZipFile）重定向到它自己的 RPP 快照。一旦它提交过预设包，
+# 本模块挂上去的文件就再也不会被读到 —— 表现为「所有检查都通过，卡片就是不出现」。
+# 这坑很隐蔽，所以单独查、单独说。
+REAREYE_PKG=hk.uwu.reareye
+REAREYE_CACHE=/data/data/com.miui.personalassistant/cache/reareye-preset-pack
+
+if [ -d "$REAREYE_CACHE" ]; then
+    emit conf.reareye fail "REAREye 冲突" \
+        "REAREye 提交过预设包，已接管预置路径；本模块的文件不会被读取" \
+        "二选一：① 弃用本模块，用 REAREye 自带的「预设包」；② 在 REAREye 里清除预设包后重启，本模块即可生效"
+elif pkg_installed "$REAREYE_PKG"; then
+    emit conf.reareye warn "REAREye 已安装" \
+        "尚未提交预设包，当前不冲突；一旦启用预设包，本模块会立刻失效" \
+        "若卡片不出现，先去 REAREye 里确认没有启用预设包"
+else
+    emit conf.reareye ok "冲突检测" "未安装 REAREye，无冲突" ""
+fi
+
+# ============================================================ 3. 资源
 set -- $(assets_progress "$MODDIR/$MANIFEST_NAME" "$MOD_SRC")
 READY=${1:-0}; TOTAL=${2:-0}
 
@@ -101,7 +122,7 @@ else
     emit res.mirror info "镜像列表" "模块内置列表（远程列表尚未拉到，不影响使用）" ""
 fi
 
-# ============================================================ 3. 注入状态
+# ============================================================ 4. 注入状态
 if [ ! -e "$MARK" ]; then
     emit inj.mount fail "预设挂载" "$DST 下读不到 rearScreen.json，预设没挂上" \
         "重启设备；仍失败请点「导出日志」反馈"
@@ -149,7 +170,7 @@ else
     emit inj.stagelog warn "开机脚本" "没有开机日志，阶段脚本可能没执行过" "重启设备；仍无日志请导出日志反馈"
 fi
 
-# ============================================================ 4. 预设内容
+# ============================================================ 5. 预设内容
 CATCOUNT=0; CARDCOUNT=0
 if [ -e "$MARK" ]; then
     CATCOUNT=$(grep -o '"categoryName"' "$MARK" 2>/dev/null | wc -l | tr -d ' ')
@@ -161,7 +182,7 @@ else
     emit pre.content fail "预设内容" "解析不出卡片" "资源可能损坏，重新下载"
 fi
 
-# ============================================================ 5. 卡片就绪度（最关键）
+# ============================================================ 6. 卡片就绪度（最关键）
 # 应用卡中心会自己过滤掉依赖不满足的卡片 —— 预设挂对了，App 没装，卡片照样不出现。
 # 这是「装了模块但没效果」的头号原因，所以逐张卡片查依赖。
 if [ -n "$CATALOG" ]; then
@@ -193,7 +214,7 @@ if [ -n "$CATALOG" ]; then
     done < "$CATALOG"
 fi
 
-# ============================================================ 6. 应用卡中心
+# ============================================================ 7. 应用卡中心
 PAV=$(pkg_version "$PA_PKG")
 if [ -n "$PAV" ]; then
     emit app.pa ok "应用卡中心" "$PA_PKG $PAV" ""
@@ -208,7 +229,7 @@ else
     emit app.running info "应用卡中心进程" "未运行（打开背屏即会拉起）" ""
 fi
 
-# ============================================================ 7. 结论
+# ============================================================ 8. 结论
 OKN=$(grep -c '^level=ok$'   "$OUT" 2>/dev/null)
 WARN=$(grep -c '^level=warn$' "$OUT" 2>/dev/null)
 FAIL=$(grep -c '^level=fail$' "$OUT" 2>/dev/null)

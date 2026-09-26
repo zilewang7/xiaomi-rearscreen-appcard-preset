@@ -17,10 +17,10 @@ MODDIR=${0%/*}
 
 . "$MODDIR/lib.sh"
 
-STAMP=$(date '+%Y%m%d-%H%M%S')
+STAMP=$(date '+%m%d-%H%M')
 OUTDIR=/sdcard/Download
-[ -d "$OUTDIR" ] || OUTDIR=/data/local/tmp
-REPORT="$OUTDIR/appcard-log-$STAMP.txt"
+[ -d "$OUTDIR" ] && [ -w "$OUTDIR" ] || OUTDIR=/data/local/tmp
+REPORT="$OUTDIR/appcard-$STAMP.txt"
 
 SRC="$MODDIR/product/media/rearscreen"
 MARK=/system/media/rearscreen/appcard/default/rearScreen.json
@@ -111,7 +111,10 @@ sec() { printf '\n================ %s ================\n' "$1"; }
     echo "================ 结束 ================"
 } > "$REPORT" 2>&1
 
-if [ -f "$REPORT" ]; then
+SIZE=$(stat -c '%s' "$REPORT" 2>/dev/null || echo 0)
+
+if [ -f "$REPORT" ] && [ "$SIZE" -gt 100 ] 2>/dev/null; then
+    # 最后一行必须是路径 —— WebUI 靠它拿给用户看
     echo "$REPORT"
 else
     echo "FAILED"
