@@ -256,8 +256,13 @@ FAIL=$(grep -c '^level=fail$' "$OUT" 2>/dev/null)
 OKN=${OKN:-0}; WARN=${WARN:-0}; FAIL=${FAIL:-0}
 
 if [ "$FAIL" -gt 0 ]; then
-    emit result.next warn "结论" "有 $FAIL 项不通过、$WARN 项需注意" \
-        "先看红色的项；卡片不出现最常见的原因是配套 App 没装"
+    emit result.next fail "结论" "$FAIL 项不通过、$WARN 项需注意" \
+        "先看标红的项；卡片不出现最常见的原因是配套 App 没装或版本不够"
+elif [ "$WARN" -gt 0 ]; then
+    # 有 warn 就不能说「全部通过」—— 面板顶部徽章会显示「N 项注意」，
+    # 结论却写「全部检查通过」，两处自相矛盾，用户只会更糊涂。
+    emit result.next warn "结论" "主要检查通过（$OKN 项正常），有 $WARN 项需注意" \
+        "看标黄的项；卡片不出现的话，多半就是那一条"
 else
     emit result.next ok "结论" "全部检查通过（$OKN 项正常）" \
         "若背屏仍看不到卡片：重启手机后重新打开应用卡中心"

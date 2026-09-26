@@ -196,9 +196,13 @@ function render(records) {
         div.appendChild(h2);
 
         items.forEach(function (r) {
-            if (r.level === 'ok') nOk++;
-            else if (r.level === 'warn') nWarn++;
-            else if (r.level === 'fail') nFail++;
+            // 「结论」是前面各项的汇总，不是一项检查 —— 算进徽章会重复计数
+            // （1 个真问题被数成「2 项异常」）。
+            if (r.id.indexOf('result.') !== 0) {
+                if (r.level === 'ok') nOk++;
+                else if (r.level === 'warn') nWarn++;
+                else if (r.level === 'fail') nFail++;
+            }
 
             const el = document.createElement('div');
             el.className = 'item ' + (r.level || 'info');
