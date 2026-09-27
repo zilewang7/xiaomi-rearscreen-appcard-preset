@@ -72,6 +72,8 @@ pkg=com.mi.car.mobile
 | `inj.mount` | 比对模块内文件与 `/system/media/...` 的 `dev:ino`。相同才说明挂的是本模块的内容；不同就可能是 ROM 自带或别的模块抢了。 |
 | `inj.context` | 上下文不是 `system_file` 时应用读不到 —— 表现是「挂上了但卡片不出现」。 |
 | `inj.symlink` | 走 `/system/media` 这条软链再验一次。应用读的是这条路径，软链断了前面全白搭。 |
+| `inj.appns` | **「root 看得见」不等于「应用看得见」**：沿 `init → zygote → 应用` 三层比对 mount namespace，报出断在哪一层。见下文专节。 |
+| `app.widget` | 应用卡这一栏的系统开关（`persist.sys.app.widget.enable` / `subscreen_app_widget_enable`）。没开的话 ROM 根本不显示这一栏，跟预设无关。 |
 | `inj.stagelog` | 阶段脚本到底跑没跑过。跑挂了日志里会有痕迹。 |
 | `card.N` | **全篇重点。** 每张卡片查它的 `bindApp` 装没装、版本够不够。不满足时 `fix` 直接写「装上它这张卡才会出现」。 |
 
@@ -195,21 +197,59 @@ DAC 权限 0600 root:root 对它就是 EACCES，跟 SELinux 无关，也不会�
 > 第 N 次同一个教训：**检查本身也可能悄悄降级成「通过」。**
 > 这一次它降级的方式是「用了一个应用永远不会用的身份（root）去检查」。
 
-## 挂载也要用应用的视角验
+## 挂载也要用应用的视角验 —— 而且要分辨断在哪一层
 
 同一个思路还修了另一处：所有挂载检查都是 root 视角，但 **Android 给每个应用
-unshare 了一份 mount namespace**。如果 bind mount 发生在 zygote 分叉之后，
-应用那边看到的是 ROM 原文件 —— 状态页却全绿。
+unshare 了一份 mount namespace**。挂载只要没进到应用那一份，应用读到的就是
+ROM 原文件 —— 状态页却全绿。这是本项目最隐蔽的一类失效。
 
-所以加了一条 `inj.appns`：拿 `pidof` 找到应用卡中心的 pid，
-`nsenter -t <pid> -m -- stat` 进它的 namespace 里读一次，比对 inode。
+最早的版本是「`nsenter -t <pid> -m -- stat` 进应用 namespace 读一次」。它在开发机
+上没问题，但社区那台 KernelSU **进不去**：v0.2.4 的日志里就写着
+`! 应用视角 进不去应用进程的 namespace，无法确认应用看到的是哪份文件` ——
+一条查不出结论的检查，等于没有。
 
-```sh
-APP_INO=$(nsenter -t "$PA_PID" -m -- stat -c '%d:%i' "$MARK")
-```
+现在的做法**只读 `/proc/<pid>/mountinfo`**，不 setns：第 4 个字段是挂载的 `<root>`，
+拿它跟模块目录比一下就知道这个进程看到的是谁的文件。读文件这条路在那台机器上是通的。
 
-这是唯一一条「以应用的视角」做的检查，也应该是所有模块检查的最终标准。
-（副作用：它也顺带证明了 `nsenter -t <pid> -m` 这条路是通的。）
+### 为什么要查三层，而不是只查应用
+
+应用进程都是 **zygote fork** 出来的，zygote 在启动时 `unshare` 了自己那份 namespace。
+于是「谁看得见」是一条链：`init → zygote → 应用`。查三层才知道该修哪儿：
+
+| 断在哪 | 含义 | 面板给的修法 |
+|---|---|---|
+| init 就没有 | 挂载根本没进开机那条链（脚本跑在自己的 namespace 里） | 点「修好应用视角」补挂；KernelSU 3.x 装 metamodule |
+| init 有、zygote 没有 | 挂载没传播到 zygote，之后 fork 的应用都看不到 | 同上 |
+| 只有应用缺 | 应用那份被「卸载模块」摘掉了（Root 方案的隐藏功能） | 关掉 KernelSU 的「默认卸载模块」/ Zygisk、LSPosed 的隐藏名单 |
+
+只报「应用看不到」而不分辨这三层，用户就只能挨个试；分辨出来，修法是唯一的。
+
+### 三个真机踩出来的细节
+
+1. **zygote 可能不止一个**（`zygote64` / `zygote`）。最初写成「任一 zygote 有就算过」，
+   结果注入故障时 32 位 zygote 掩盖了 64 位那份缺失。改成**每个** zygote 都必须有。
+2. **`/system/media` 是软链**（指向 `/product/media`）。mountinfo 里记的是解析后的
+   挂载点 `/product/media/rearscreen`。按字面比对挂载点，会得到「问 `/system/media/...`
+   永远说没有」—— 于是开机脚本每次自检都重复挂一层，还判定失败。`ns_state()` 现在
+   两种写法都认。
+3. **app 顺序**：`mount --bind` 之后立刻读 `/proc/<pid>/mountinfo` 是可靠的（内核对同一
+   peer group 的传播是同步的），不需要 sleep。
+
+### 真机验证（故障注入）
+
+在开发机上把挂载从指定那一份里 `umount` 掉，看面板和修复按钮的反应：
+
+| 注入 | 面板 | 点「修好应用视角」 |
+|---|---|---|
+| init 那层卸掉 | ✗ 链条第一层就断了 | 补回 init，zygote 与应用跟着恢复（传播是活的） |
+| 两个 zygote 都卸掉 | ! 应用现在读得到，但上一层缺 —— 重启应用后就可能又看不到 | 补进 2 个 zygote |
+| 只卸掉应用那份 | ✗ 链条第三层断了（只有 personalassistant ✗） | 补进 1 个应用 |
+
+顺带确认了：**在 init 那一份里挂上之后，zygote 和正在运行的应用会自动跟着看到**，
+所以在 init/zygote 层修好是根治性的，不需要逐个应用去挂。
+
+同一个「视角」思路还解释了另一类反馈：`inject.sh` 里也加了同样的判断 ——
+如果脚本自己所在的 namespace 不是 init 的，它会**主动往 init 那一份再挂一次**。
 
 ## 真机验证记录
 
@@ -219,7 +259,7 @@ APatch（管理器包名为 `me.yuki.folk`，FolkPatch）。
 - 面板由管理器的 `WebUIActivity` 加载，`addJavascriptInterface(..., "ksu")`
   注入的桥与 KernelSU 完全一致，所以一份前端两边通吃。
 - `ksu://icon/<pkg>` 能拿到真实应用图标（米家、小米汽车、股票的图标都正常显示）。
-- 五个按钮都验过：`导出日志` 生成 `/sdcard/Download/appcard-log-<时间>.txt`，
+- 六个按钮都验过：`导出日志` 生成 `/sdcard/Download/appcard-log-<时间>.txt`，
   `复制诊断` 在剪贴板不可用时落到 `/sdcard/Download/appcard-diagnose.txt`。
 - 一个坑：`WebUIActivity` 是 **not exported** 的，adb shell（uid 2000）拉不起来，
   得用 root（`su -c am start ...`）才能手动打开面板做测试。
@@ -231,3 +271,6 @@ APatch（管理器包名为 `me.yuki.folk`，FolkPatch）。
 - 排查这个坑时用了一个小技巧：往 `status.sh` 里临时插一行
   `emit env.probe info ...` 把探针结果打到面板上。注意 id 必须以已注册的
   section 前缀开头（`env.` / `conf.` / …），否则 `render()` 会把它过滤掉，什么都不显示。
+- `unshare -m` 出来的 namespace 在开发机上**仍与 init 同一个传播组**：在子 namespace 里
+  `mount --bind` 会反向传播到 init。所以「脚本被放进独立 namespace」这件事在
+  APatch 上模拟不出来，只能靠面板的三层对照去分辨（这正是它存在的理由）。

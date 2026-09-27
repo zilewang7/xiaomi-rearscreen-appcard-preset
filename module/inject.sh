@@ -78,14 +78,22 @@ fi
 # 走到这里说明资源和权限都已经没问题了，这时「挂载还在且 inode 一致」才可以
 # 安心地当收工条件。脚本会跑很多次（三个阶段 + 手动触发），这条保证幂等。
 # bind mount 是活的：后面补进来的文件会自动可见，不需要重挂。
+#
+# 但「挂在哪儿」也要算数：应用只认 init → zygote 这条链。有些 Root 方案会把模块
+# 脚本放进独立的 mount namespace，那时本脚本看得见、init 那一份却没有，应用照样
+# 读不到 —— 只查 inode 会把这台机器判成「已挂载，跳过」，永远修不上。
 if [ -e "$MARK" ]; then
     DST_INO=$(stat -c '%d:%i' "$MARK" 2>/dev/null)
     SRC_INO=$(stat -c '%d:%i' "$SRC_MARK" 2>/dev/null)
     if [ -n "$DST_INO" ] && [ "$DST_INO" = "$SRC_INO" ]; then
-        xlog "$STAGE" "已挂载（$READY/$TOTAL）且权限正常，跳过"
-        exit 0
+        if [ "$(ns_ref $$)" = "$(ns_ref 1)" ] || [ "$(ns_state 1 "$DST")" = ours ]; then
+            xlog "$STAGE" "已挂载（$READY/$TOTAL）且权限正常，跳过"
+            exit 0
+        fi
+        xlog "$STAGE" "本脚本视角已挂载，但 init 那一份没有 —— 补挂"
+    else
+        xlog "$STAGE" "检测到预设存在但 inode 不一致，准备重新挂载"
     fi
-    xlog "$STAGE" "检测到预设存在但 inode 不一致，准备重新挂载"
 fi
 
 # ---------------------------------------------------------------- 3. 等目标路径就绪
@@ -105,7 +113,17 @@ fi
 chcon -R u:object_r:system_file:s0 "$SRC" 2>>"$LOGFILE"
 
 # ---------------------------------------------------------------- 5. bind mount
+# 挂两处：本脚本所在的 namespace（自己看得到），以及 init 那一份（应用看得到）。
+# 正常情况下两者是同一份，第二次是空操作。
 mount --bind "$SRC" "$DST" 2>>"$LOGFILE"
+
+if [ "$(ns_ref $$)" != "$(ns_ref 1)" ]; then
+    if ns_bind 1 "$SRC" "$DST"; then
+        xlog "$STAGE" "已补挂进 init 的 namespace"
+    else
+        xlog "$STAGE" "补挂 init 的 namespace 失败（nsenter 不可用或没权限）"
+    fi
+fi
 
 if [ -e "$MARK" ]; then
     DST_INO=$(stat -c '%d:%i' "$MARK" 2>/dev/null)

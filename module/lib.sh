@@ -60,22 +60,103 @@ umask 022
 # 修正办法：发现视图被隔离就带 init 的 mount namespace 重跑自己。
 # 先验证 nsenter 真的有效（不同设备/内核对 -t 1 的处理不一样），再 exec，
 # 免得把脚本直接跑死。
+# nsenter：优先 PATH 里的；开机脚本的 PATH 未必和交互 shell 一样，所以再试几个
+# 绝对路径；最后退回各家自带的 busybox（KernelSU / Magisk / APatch 位置不同）。
+_nsenter() {
+    if command -v nsenter >/dev/null 2>&1; then
+        nsenter "$@"
+    elif [ -x /system/bin/nsenter ]; then
+        /system/bin/nsenter "$@"
+    else
+        for _b in /data/adb/ksu/bin/busybox /data/adb/magisk/busybox \
+                  /data/adb/ap/bin/busybox /data/adb/apd/bin/busybox \
+                  /system/bin/busybox; do
+            [ -x "$_b" ] && { "$_b" nsenter "$@"; return $?; }
+        done
+        return 127
+    fi
+}
+
 ns_reexec() {  # 用法：ns_reexec "$@"，放在脚本 source lib.sh 之后
     [ -n "$APPCARD_NS_FIXED" ] && return 0
     n=$(ls /data/data 2>/dev/null | wc -l)
     [ "${n:-0}" -ge 100 ] && return 0          # 视图正常，无事发生
-    command -v nsenter >/dev/null 2>&1 || return 0
 
-    n2=$(nsenter -t 1 -m -- ls /data/data 2>/dev/null | wc -l)
+    n2=$(_nsenter -t 1 -m -- ls /data/data 2>/dev/null | wc -l)
     [ "${n2:-0}" -ge 100 ] || return 0         # nsenter 也救不了，就算了
 
     APPCARD_NS_FIXED=1
     export APPCARD_NS_FIXED
-    exec nsenter -t 1 -m -- "$0" "$@"
+    exec _nsenter -t 1 -m -- "$0" "$@"
 }
 
 # 视图是不是被隔离过（状态页可以据此提示用户）
 ns_was_isolated() { [ -n "$APPCARD_NS_FIXED" ] && echo 1 || echo 0; }
+
+# ---- mount namespace「视角对照」 -------------------------------------------
+# 本项目最隐蔽的一类失效是「root 看得见，应用看不见」：文件挂好了、权限也对、
+# inode 也一致，但应用那一份 mount namespace 里没有这个挂载，于是它读到的还是
+# ROM 原文件 —— 面板全绿、卡片全无。
+#
+# 为什么会分叉：应用进程都是 zygote fork 出来的，zygote 在启动时 unshare 了
+# 自己那份 namespace。所以「谁看得见」可以沿 **init → zygote → 应用** 这条链
+# 一层层查清楚。有些 Root 方案（KernelSU 3.x 就是）在应用进程变成 app uid 的
+# 那一刻，还会按应用配置把模块挂载「卸载」掉 —— 那就表现为 init/zygote 都看得见、
+# 只有应用看不见。
+#
+# 查法只用读 /proc/<pid>/mountinfo，**不需要 setns**：社区那台 KernelSU 上
+# nsenter 进应用 namespace 是失败的，读文件却能拿到同样的答案。
+APPCARD_ID=rearscreen_appcard_preset
+APPCARD_DST=/product/media/rearscreen
+
+# 进程的 mount namespace 编号（形如 mnt:[4026532902]）
+ns_ref() {  # $1=pid
+    readlink "/proc/$1/ns/mnt" 2>/dev/null \
+        || ls -l "/proc/$1/ns/mnt" 2>/dev/null | sed -n 's/.*-> //p'
+}
+
+# 这个进程看到的 $2 挂在哪儿：ours（本模块）/ other（别人挂的）/ none / unreadable
+#
+# 注意 /system/media 在很多 ROM 上是指向 /product/media 的软链：mountinfo 里记的是
+# **解析后**的挂载点（/product/media/rearscreen），而调用方可能拿软链那一边来问。
+# 只按字面比对的话，问「/system/media/... 挂了吗」永远得到「没有」，于是每次自检都
+# 重复挂一层、还判定失败。所以两种写法都认。（这个坑真机踩过。）
+ns_state() {  # $1=pid $2=mountpoint
+    _mi="/proc/$1/mountinfo"
+    [ -r "$_mi" ] || { echo unreadable; return 0; }
+    case "$2" in
+        /system/media/*) _alt=/product/media/${2#/system/media/} ;;
+        /product/media/*) _alt=/system/media/${2#/product/media/} ;;
+        *) _alt="$2" ;;
+    esac
+    _rt=$(awk -v mp="$2" -v alt="$_alt" '$5 == mp || $5 == alt { print $4; exit }' "$_mi" 2>/dev/null)
+    if [ -z "$_rt" ]; then
+        echo none
+    else
+        case "$_rt" in
+            *"$APPCARD_ID"*) echo ours ;;
+            *)               echo other ;;
+        esac
+    fi
+}
+
+# 这个进程的 namespace 里有多少「模块相关挂载」——用来区分「被单独摘掉」和
+# 「这个 Root 方案压根不往应用里挂模块文件」
+ns_modcount() {  # $1=pid
+    grep -cE '/(data/)?adb/modules/|rearscreen_appcard_preset' \
+        "/proc/$1/mountinfo" 2>/dev/null || echo 0
+}
+
+# 把挂载补进某个进程的 namespace（幂等）。0 = 本来就在，或补成功
+ns_bind() {  # $1=pid $2=src $3=dst
+    [ "$(ns_state "$1" "$3")" = ours ] && return 0
+    _nsenter -t "$1" -m -- mount --bind "$2" "$3" 2>/dev/null || return 1
+    [ "$(ns_state "$1" "$3")" = ours ] || return 1
+    return 0
+}
+
+# zygote 的 pid（应用都是它的子进程）
+ns_zygotes() { pidof zygote64 2>/dev/null; pidof zygote 2>/dev/null; }
 
 # ---- 网络预算 --------------------------------------------------------------
 FETCH_CONNECT_TIMEOUT=6      # 单次连接超时（秒）

@@ -176,6 +176,19 @@ const ACTIONS = {
         titleFail: '修复未完全成功',
         fixOk: '已重启应用卡中心，打开背屏即可看到卡片',
         cmd: 'sh ' + q(MODDIR + '/fix-perms.sh')
+    },
+    // 「应用视角」那一项红的时候用这个：把挂载补进 init / zygote / 正在运行的应用
+    // 各自的 mount namespace。文件本身没问题，是应用那一份 namespace 里没有它。
+    fix_view: {
+        label: '修好应用视角',
+        busy: '补齐中…',
+        hint: '再点一次就会把预设补进 init / zygote / 应用的 namespace（应用读取不到预设时用这个）',
+        titleOk: '已补进应用视角',
+        titleNothing: '应用视角本来就正常',
+        titlePartial: '补了一部分',
+        titleFail: '没补进去',
+        fixOk: '已重启应用卡中心，打开背屏即可看到卡片',
+        cmd: 'sh ' + q(MODDIR + '/fix-view.sh')
     }
 };
 
@@ -401,6 +414,7 @@ async function runAction(id, btn) {
     const out = (res.stdout || '').trim();
     const ok = /\bRESULT=ok\b/.test(out);
     const nothing = /\bRESULT=nothing\b/.test(out);
+    const partial = /\bRESULT=partial\b/.test(out);
 
     // 去掉给机器看的那行，剩下的原样给用户看
     let lines = out.split('\n').filter(function (l) {
@@ -415,12 +429,15 @@ async function runAction(id, btn) {
     // 标题必须按动作取 —— 写死成某一个动作的文案，另一个动作的结果卡就会
     // 张冠李戴（修权限却写着「已清除 REAREye 预设包」）。真机上踩过。
     prependCard(
-        ok ? (a.titleOk || '已完成') : (nothing ? (a.titleNothing || '无需处理') : (a.titleFail || '操作失败')),
+        ok ? (a.titleOk || '已完成')
+            : nothing ? (a.titleNothing || '无需处理')
+                : partial ? (a.titlePartial || a.titleFail || '只成功了一部分')
+                    : (a.titleFail || '操作失败'),
         human || (ok ? '已完成' : '请导出日志反馈'),
-        ok ? (a.fixOk || '') : ''
+        (ok || partial) ? (a.fixOk || '') : ''
     );
     window.scrollTo(0, 0);   // 结果卡插在最上面，别让它落在屏幕外
-    showToast(ok ? '已完成' : (nothing ? '无需处理' : '操作失败'));
+    showToast(ok ? '已完成' : (nothing ? '无需处理' : (partial ? '补了一部分' : '操作失败')));
 }
 
 async function actLogpack(btn) {

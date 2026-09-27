@@ -210,54 +210,114 @@ else
         "/system/media 是指向 /product/media 的软链，读不到说明挂载点不对"
 fi
 
-# 上面所有检查都是「root 视角」。但应用有自己的 mount namespace（Android 给每个
-# 应用 unshare 一份），挂载如果没进到应用那一份，应用读到的就是 ROM 原文件 ——
-# 而 root 视角一切正常。这是本项目最隐蔽的一类失效，所以必须验。
+# 上面所有检查都是「本脚本视角」。但应用有自己的 mount namespace，挂载如果没进到
+# 它那一份，应用读到的就是 ROM 原文件 —— 而本脚本视角一切正常。这是本项目最隐蔽的
+# 一类失效，所以沿 **init → zygote → 应用** 把三层都排出来，看链条断在哪一节。
 #
-# 查法：读 /proc/<pid>/mountinfo，看挂载点上的 <root> 字段是不是本模块目录。
-#   12364 12363 254:62 /adb/modules/…/product/media/rearscreen /product/media/rearscreen …
-#                    ^^^^^^^^^^ 第 4 个字段 —— 是它，就说明这个进程看到的是本模块。
-# 不用额外权限，只要进程看得见就能查。nsenter 在某些 Root 方案/内核上进不去
-# （社区那台 KernelSU 就是），所以只当补充，不做主判据。
+# 为什么是这三层：应用进程都是 zygote fork 出来的，zygote 启动时 unshare 了自己那份
+# namespace（所以它的号跟 init 不同）。挂载只要进到 zygote 那一份，之后 fork 的应用
+# 就会继承；反过来，挂载晚于 zygote 的 unshare，或者被 Root 方案在「应用变成 app uid」
+# 那一刻卸掉，应用就永远看不到。
 #
-# 三个应用都要查：REAREye 的 TARGET_PACKAGES 就是这三个，说明读这份预设的不止一个 ——
-# 背屏界面由 subscreencenter 渲染，主题商店也会读，只查应用卡中心会漏。
+# 查法只用读 /proc/<pid>/mountinfo，不需要 setns —— 社区那台 KernelSU 上 nsenter
+# 进应用 namespace 是失败的，读文件却能拿到同样的答案。
 APPNS_LIST="com.miui.personalassistant com.xiaomi.subscreencenter com.android.thememanager"
-APPNS_DETAIL=""
-APPNS_LEVEL=ok
+
+ns_mark() {  # 把内部状态画成一眼能看懂的符号
+    case "$1" in
+        ours)   echo '✓' ;;
+        none)   echo '✗' ;;
+        other)  echo '别' ;;
+        noproc) echo '—' ;;
+        *)      echo '?' ;;
+    esac
+}
+
+SELF_NS=$(ns_ref $$)
+INIT_NS=$(ns_ref 1)
+INIT_S=$(ns_state 1 "$APPCARD_DST")
+
+# zygote 可能不止一个（zygote64 / zygote），应用跟的是自己那一个 —— 所以要求
+# **每一个** zygote 都有，只要有一个缺，就说明有应用会看不到（别用「任一」当通过）。
+ZYG_S=noproc
+ZYG_N=0
+for _z in $(ns_zygotes); do
+    ZYG_N=$((ZYG_N + 1))
+    _zs=$(ns_state "$_z" "$APPCARD_DST")
+    if [ "$_zs" = ours ]; then
+        [ "$ZYG_S" = noproc ] && ZYG_S=ours
+    else
+        ZYG_S=$_zs
+    fi
+done
+
+APPNS_OK=0
 APPNS_BAD=""
+APPNS_OFF=""
 for _pkg in $APPNS_LIST; do
     _short=${_pkg##*.}
     _pids=$(pidof "$_pkg" 2>/dev/null)
     if [ -z "$_pids" ]; then
-        APPNS_DETAIL="$APPNS_DETAIL${_short}(未运行) "
+        APPNS_OFF="$APPNS_OFF$_short "
         continue
     fi
-    _verdict="miss"
+    _seen=none
     for _p in $_pids; do
-        _root=$(awk '$5 == "/product/media/rearscreen" || $5 == "/system/media/rearscreen" { print $4; exit }' \
-                "/proc/$_p/mountinfo" 2>/dev/null)
-        case "$_root" in
-            *rearscreen_appcard_preset*) _verdict="ok"; break ;;
-            "") ;;
-            *) _verdict="other" ;;
+        case "$(ns_state "$_p" "$APPCARD_DST")" in
+            ours)  _seen=ours; break ;;
+            other) _seen=other ;;
         esac
     done
-    case "$_verdict" in
-        ok)    APPNS_DETAIL="$APPNS_DETAIL${_short} ✓ " ;;
-        other) APPNS_DETAIL="$APPNS_DETAIL${_short} ✗(挂的不是本模块) "
-               APPNS_LEVEL=fail; APPNS_BAD="$APPNS_BAD$_short " ;;
-        *)     APPNS_DETAIL="$APPNS_DETAIL${_short} ✗(namespace 里没有这个挂载) "
-               APPNS_LEVEL=fail; APPNS_BAD="$APPNS_BAD$_short " ;;
+    case "$_seen" in
+        ours) APPNS_OK=$((APPNS_OK + 1)) ;;
+        *)    APPNS_BAD="$APPNS_BAD$_short($(ns_mark "$_seen")) " ;;
     esac
 done
 
-if [ "$APPNS_LEVEL" = ok ]; then
-    emit inj.appns ok "应用视角" "读到本模块：${APPNS_DETAIL% }" ""
+# 自检本身跑在谁的视角里 —— 这一行是元信息，但很重要：如果连自检都不在 init 的
+# namespace 里，上面那些「root 视角」的结论只代表这一个视角，别当全局事实。
+if [ -n "$SELF_NS" ] && [ -n "$INIT_NS" ] && [ "$SELF_NS" != "$INIT_NS" ]; then
+    emit inj.selfns warn "自检视角" \
+        "本次自检跑在 $SELF_NS，而 init 是 $INIT_NS（不在同一份 namespace 里），上面几项只代表本脚本这个视角" \
+        "换个入口再看一次（点「重新检测」/ 重启后）；若一直如此，说明这套 Root 方案没把 su 放进全局 namespace"
+fi
+
+if [ -n "$APPNS_BAD" ]; then
+    # 有应用看不到 —— 按「链条断在哪一层」给不同的修法，别让人拿着同一句废话瞎试
+    if [ "$INIT_S" != ours ]; then
+        emit inj.appns fail "应用视角" \
+            "链条第一层就断了：init $(ns_mark "$INIT_S") · zygote $(ns_mark "$ZYG_S") —— 本模块的挂载没进开机那一份 namespace，只有本脚本这个视角看得到" \
+            "开机脚本的挂载落在了别的 namespace 里。KernelSU 3.x 把模块挂载交给了 metamodule：装上官方 meta-overlayfs 再重启（本模块的 product/ 目录会由 KernelSU 自己挂上）。也可以先点下面的按钮，把预设补进 init / zygote / 应用的 namespace" \
+            "" "fix_view"
+    elif [ "$ZYG_S" != ours ]; then
+        emit inj.appns fail "应用视角" \
+            "链条第二层断了：init ✓ · zygote $(ns_mark "$ZYG_S") —— 挂载没进 zygote 那一份，而应用都是从 zygote fork 的，所以看不到：${APPNS_BAD% }" \
+            "点下面的按钮把预设补进 zygote 和正在运行的应用；若每次重启后都这样，说明这套 Root 方案的 namespace 是隔离的，装 metamodule 才能治本" \
+            "" "fix_view"
+    else
+        emit inj.appns fail "应用视角" \
+            "链条第三层断了：init ✓ · zygote ✓，只有应用那一份里没有本模块：${APPNS_BAD% }" \
+            "应用那份 namespace 被「卸载模块」摘掉（或盖住）了。KernelSU 设置里「默认卸载模块」默认是开着的：关掉它，或在「应用配置」里给这三个应用单独关掉「卸载模块」；Zygisk Next / LSPosed 的隐藏名单是同一类操作。点下面的按钮可以先把预设补进正在运行的应用（立刻见效，但重启应用后会再被摘掉）" \
+            "" "fix_view"
+    fi
+elif [ "$APPNS_OK" -gt 0 ]; then
+    _d="init $(ns_mark "$INIT_S") · zygote $(ns_mark "$ZYG_S") · $APPNS_OK 个应用 $(ns_mark ours)"
+    if [ "$INIT_S" != ours ] || [ "$ZYG_S" != ours ]; then
+        # 应用现在读得到，但上面那一层缺 —— 这次能用，重启应用就可能又看不到。
+        # 这正是「有时好有时坏」的来源，必须说出来，不能算通过。
+        emit inj.appns warn "应用视角" \
+            "$_d —— 应用现在读得到，但上一层缺（init $(ns_mark "$INIT_S") / zygote $(ns_mark "$ZYG_S")），重启应用后就可能又看不到" \
+            "点下面的按钮把预设补进 init 和 zygote；只要这两层是 ✓，之后启动的应用都会自动继承" \
+            "" "fix_view"
+    elif [ -n "$APPNS_OFF" ]; then
+        emit inj.appns warn "应用视角" "$_d（未运行：${APPNS_OFF% }）" \
+            "没在跑的应用验不了，别把它当通过：打开背屏卡片页，或点「重启应用卡中心」后再看一次"
+    else
+        emit inj.appns ok "应用视角" "$_d —— 应用读到的就是本模块的文件" ""
+    fi
 else
-    emit inj.appns fail "应用视角" \
-        "这几个应用的 mount namespace 里看不到本模块：${APPNS_BAD% }（${APPNS_DETAIL% }）" \
-        "背屏读到的是 ROM 原文件，卡片自然不出现：重启设备；仍如此请导出日志反馈（这是「一切正常但没卡片」最常见的成因）"
+    emit inj.appns warn "应用视角" "三个应用现在都没在运行，没法验证它们那一份 namespace" \
+        "打开背屏卡片页（或点「重启应用卡中心」）让它跑起来，再点「重新检测」"
 fi
 
 if [ -f "$INJ_LOG" ]; then
