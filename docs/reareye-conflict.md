@@ -143,19 +143,21 @@ ns_reexec() {
     [ -n "$APPCARD_NS_FIXED" ] && return 0          # 已经修过，别递归
     n=$(ls /data/data 2>/dev/null | wc -l)
     [ "${n:-0}" -ge 100 ] && return 0               # 视图正常，什么都不做
-    command -v nsenter >/dev/null 2>&1 || return 0
 
-    n2=$(nsenter -t 1 -m -- ls /data/data 2>/dev/null | wc -l)
+    n2=$(_nsenter -t 1 -m -- ls /data/data 2>/dev/null | wc -l)
     [ "${n2:-0}" -ge 100 ] || return 0              # nsenter 也救不了就放弃
 
     APPCARD_NS_FIXED=1; export APPCARD_NS_FIXED
-    exec nsenter -t 1 -m -- "$0" "$@"               # 换正确的视图重跑整个脚本
+    exec _nsenter -t 1 -m -- "$0" "$@"              # 换正确的视图重跑整个脚本
 }
 ```
 
 要点：
 * **先验证再 exec**。`nsenter -t 1 -m` 在个别内核/ROM 上未必可用，
   直接 `exec` 会把脚本跑死；先用它 `ls` 一次，确认能看见真实视图再换。
+* **`_nsenter` 而不是裸 `nsenter`**：开机脚本的 `PATH` 未必和交互 shell 一样，
+  所以先试 `PATH`，再试 `/system/bin/nsenter`，最后退回各家自带的 busybox
+  （`/data/adb/ksu/bin/busybox`、`/data/adb/magisk/busybox`、`/data/adb/ap/bin/busybox`）。
 * **整脚本重跑**，不是在每个检查里打补丁。这样所有检查（现在和以后加的）
   都自动拿到正确视图，不会有人忘了加。
 * 用环境变量防递归。
