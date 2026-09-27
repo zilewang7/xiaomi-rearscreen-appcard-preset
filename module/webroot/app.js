@@ -38,6 +38,66 @@ const PA_PKG = 'com.miui.personalassistant';
 let cbSeq = 0;
 let bridgeMode = 'cb2';          // 'cb2' | 'cb3' | 'sync'
 
+// ---------------------------------------------------------------- 忙碌态
+// 为什么需要这一组：
+//   1) ksu.exec 在有些管理器里是**同步阻塞**的 —— 设完按钮文字要等浏览器画一帧
+//      再发命令，否则页面直接冻住，用户看到的还是「点了没反应」（忙碌态压根没画出来）。
+//   2) 做的事本身要几秒到几十秒（补资源、打包日志、改属主、重挂 namespace），
+//      只有按钮变灰是看不出来的，得让整个页面都显得「在动」。
+// 所以：按钮上转圈 + 顶部一条跑动的进度条 + 秒数计时。
+let busyCount = 0;
+let busyTimer = null;
+
+// 等浏览器真的画一帧再往下走（双 rAF + 一个宏任务，WebView 上足够）
+function nextPaint() {
+    return new Promise(function (r) {
+        requestAnimationFrame(function () {
+            requestAnimationFrame(function () { setTimeout(r, 0); });
+        });
+    });
+}
+
+function busyOn(btn, text) {
+    if (!btn) return function () {};
+    const oldHTML = btn.innerHTML;
+    const oldDisabled = btn.disabled;
+    btn.disabled = true;
+    btn.classList.add('busy');
+    btn.innerHTML = '<span class="spinner"></span><span class="blab">' + esc(text || '处理中…') + '</span>';
+    return function () {
+        btn.disabled = oldDisabled;
+        btn.classList.remove('busy');
+        btn.innerHTML = oldHTML;
+    };
+}
+
+// 顶部进度条 + 秒数：标签打在按钮上（页面被冻住时它是最后画上去的那一帧，
+// 但只要任务还在跑，CSS 那条动画就会继续动 —— 这就是「没死」的信号）
+function busyStart(label) {
+    busyCount++;
+    const bar = document.getElementById('busybar');
+    const t0 = Date.now();
+    const base = label || '处理中';
+    if (busyCount === 1) {
+        if (bar) bar.hidden = false;
+        busyTimer = setInterval(function () {
+            const s = Math.round((Date.now() - t0) / 1000);
+            if (s < 3) return;                      // 3 秒内不显示秒数，免得闪
+            document.querySelectorAll('button.busy .blab').forEach(function (l) {
+                l.textContent = base + ' ' + s + 's';
+            });
+        }, 1000);
+    }
+    return function () {
+        busyCount = Math.max(0, busyCount - 1);
+        if (busyCount === 0) {
+            clearInterval(busyTimer);
+            busyTimer = null;
+            if (bar) bar.hidden = true;
+        }
+    };
+}
+
 function hasBridge() {
     return !!(window.ksu && typeof window.ksu.exec === 'function');
 }
@@ -353,10 +413,10 @@ async function refresh(silent) {
 
 // ------------------------------------------------------------------ 操作
 async function actFetch(btn) {
-    btn.disabled = true;
-    const old = btn.textContent;
-    btn.textContent = '补齐中…';
+    const done = busyOn(btn, '补齐中');
+    const stop = busyStart('补齐资源');
     showToast('已在后台开始补齐资源，可继续用手机');
+    await nextPaint();
 
     // 丢到后台，立刻返回，不阻塞界面
     await exec('(nohup sh ' + q(FETCH_SH) + ' >/dev/null 2>&1 &) ; echo started', 15000);
@@ -368,18 +428,21 @@ async function actFetch(btn) {
         await refresh(true);
         if (ticks >= 18) {
             clearInterval(timer);
-            btn.disabled = false;
-            btn.textContent = old;
+            done();
+            stop();
             showToast('后台补齐结束，请查看「资源」一栏');
         }
     }, 10000);
 }
 
 async function actRestartApp(btn) {
-    btn.disabled = true;
+    const done = busyOn(btn, '重启中');
+    const stop = busyStart('重启应用卡中心');
+    await nextPaint();
     await exec('am force-stop ' + PA_PKG);
-    toast('已停止应用卡中心，打开背屏即会重新读取预设');
-    setTimeout(function () { btn.disabled = false; }, 1200);
+    done();
+    stop();
+    showToast('已停止应用卡中心，打开背屏即会重新读取预设');
 }
 
 // 往列表最前面插一张结果卡（refresh 会把整棵 DOM 重画，所以要在 refresh 之后再插）
@@ -419,8 +482,9 @@ async function runAction(id, btn) {
     btn.dataset.armed = '';
     clearTimeout(btn._t);
     btn.classList.remove('armed');
-    btn.disabled = true;
-    btn.textContent = a.busy || '处理中…';
+    const done = busyOn(btn, a.busy || '处理中');
+    const stop = busyStart(a.label);
+    await nextPaint();          // 先让这帧画出来，再发命令（同步 exec 会冻住页面）
 
     const res = await exec(a.cmd, 60000);
     const out = (res.stdout || '').trim();
@@ -436,6 +500,8 @@ async function runAction(id, btn) {
     if (lines.length > 1) lines = lines.slice(1);
     const human = lines.join('\n').trim();
 
+    done();
+    stop();
     await refresh(true);
 
     // 标题必须按动作取 —— 写死成某一个动作的文案，另一个动作的结果卡就会
@@ -453,15 +519,16 @@ async function runAction(id, btn) {
 }
 
 async function actLogpack(btn) {
-    btn.disabled = true;
-    const old = btn.textContent;
-    btn.textContent = '打包中…';
+    const done = busyOn(btn, '打包中');
+    const stop = busyStart('打包日志');
+    showToast('正在打包（含卡片清单与背屏日志），约 10~30 秒，别退出本页');
+    await nextPaint();
 
     const res = await exec('sh ' + q(LOGPACK_SH), 120000);
     const path = (res.stdout || '').trim().split('\n').pop();
 
-    btn.disabled = false;
-    btn.textContent = old;
+    done();
+    stop();
 
     if (path && path.indexOf('/') === 0) {
         showToast('日志已保存：' + path);
@@ -491,7 +558,10 @@ function wrap_report() {
     document.body.removeChild(ta);
 }
 
-async function actCopy() {
+async function actCopy(btn) {
+    const done = busyOn(btn, '收集中');
+    const stop = busyStart('整理诊断文本');
+    await nextPaint();
     // 用文本报告更好读，方便贴到社区
     const res = await exec('sh ' + q(STATUS_SH) + ' --text', 60000);
     const text = '【背屏应用卡中心 诊断】\n' + (res.stdout || lastReport);
@@ -499,6 +569,8 @@ async function actCopy() {
     if (navigator.clipboard && navigator.clipboard.writeText) {
         try {
             await navigator.clipboard.writeText(text);
+            done();
+            stop();
             showToast('诊断内容已复制，可直接粘贴');
             return;
         } catch (e) { /* 降级 */ }
@@ -509,6 +581,8 @@ async function actCopy() {
     const res2 = await exec(
         'echo ' + q(b64) + ' | base64 -d > /sdcard/Download/appcard-diagnose.txt && echo ok',
         30000);
+    done();
+    stop();
     if ((res2.stdout || '').indexOf('ok') >= 0) {
         showToast('已保存到 Download/appcard-diagnose.txt');
     } else {
@@ -526,8 +600,17 @@ function syncDockPadding() {
         (dock.getBoundingClientRect().height + 20) + 'px';
 }
 
+async function actRefresh(btn) {
+    const done = busyOn(btn, '检测中');
+    const stop = busyStart('检测中');
+    await nextPaint();
+    await refresh(false);
+    done();
+    stop();
+}
+
 document.addEventListener('DOMContentLoaded', function () {
-    document.getElementById('btn-refresh').addEventListener('click', function () { refresh(false); });
+    document.getElementById('btn-refresh').addEventListener('click', function () { actRefresh(this); });
     document.getElementById('btn-fetch').addEventListener('click', function () { actFetch(this); });
     document.getElementById('btn-restart').addEventListener('click', function () { actRestartApp(this); });
     document.getElementById('btn-log').addEventListener('click', function () { actLogpack(this); });

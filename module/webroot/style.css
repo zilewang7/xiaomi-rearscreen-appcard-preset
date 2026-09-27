@@ -282,6 +282,30 @@ button.primary {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* 顶部忙碌进度条：任务在跑时一直动 —— 同步 exec 冻住页面时，这是唯一还能动的信号 */
+.busybar {
+    position: fixed; left: 0; right: 0; top: 0; height: 3px; z-index: 90;
+    background: rgba(79, 140, 255, .18); overflow: hidden; pointer-events: none;
+}
+.busybar[hidden] { display: none; }
+.busybar > i {
+    display: block; height: 100%; width: 40%;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    animation: busyslide 1.1s ease-in-out infinite;
+}
+@keyframes busyslide {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(250%); }
+}
+
+/* 按钮忙碌态：转圈 + 文字，禁用时也不能变得看不出来 */
+button.busy, .item .fixbtn.busy { opacity: 1; cursor: default; }
+button.busy .spinner, .item .fixbtn.busy .spinner {
+    border-color: currentColor; border-top-color: transparent; opacity: .85;
+    margin-right: 7px;
+}
+button.primary.busy { opacity: .92; }
+
 /* 顶部提示条（toast 替代，WebView 里 toast 不一定有） */
 #toast {
     position: fixed;
