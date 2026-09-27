@@ -179,6 +179,18 @@ const ACTIONS = {
     },
     // 「应用视角」那一项红的时候用这个：把挂载补进 init / zygote / 正在运行的应用
     // 各自的 mount namespace。文件本身没问题，是应用那一份 namespace 里没有它。
+    // 「背屏卡片可写」红的时候用这个：appInfo.json 的属主被 root 工具/备份还原动过，
+    // 应用既改不动也写不进 → 点「添加」只进内存、存不下盘。这里把属主/权限改对。
+    fix_regperm: {
+        label: '修好卡片写入',
+        busy: '修复中…',
+        hint: '再点一次就会把背屏卡片状态文件的属主/权限改成「背屏应用可写」（内容不动）',
+        titleOk: '已修好卡片写入',
+        titleNothing: '本来就可以写',
+        titleFail: '没修成功',
+        fixOk: '回到应用卡中心再点一次「添加」，这次背屏上就会出现了',
+        cmd: 'sh ' + q(MODDIR + '/fix-regperm.sh')
+    },
     fix_view: {
         label: '修好应用视角',
         busy: '补齐中…',

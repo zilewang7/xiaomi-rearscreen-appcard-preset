@@ -267,6 +267,39 @@ subscreencenter 自己维护的一份清单决定：
 `app.registry` 把两边摆出来（背屏已添加几张、预置的几张在上面、分别是哪些卡），
 导出日志时这几个文件也一起打包，不用再让用户手工找文件。
 
+## 「点添加提示成功、背屏却没变化」——存不下盘
+
+社区那台机器最后就卡在这一个文件上：
+
+```
+/data/system/theme_magic/users/0/subscreencenter/config/appInfo.json
+```
+
+它是背屏的「已添加卡片」清单（点「添加」= 调 `insertApp` 往这里写一条）。那台机器上它的
+属主不是背屏应用（`0:0 644`，应用 uid 是 `u0_a207`/10207），于是应用既改不动它的权限、
+也写不进去 —— 它自己的日志把过程记得清清楚楚：
+
+```
+insertApp: appInfo = LauncherAppInfo{mAppName='隐身模式', mMamlPath='/system/media/rearscreen/...'}
+FileUtils - Write .../config/appInfo.json failed
+LauncherDataManager - SaveAppInfo, saved = false, size = 5      ← 内存里 5 张，盘上还是 4 张
+FileUtils - Chmod 777 for .../config/appInfo.json failed         ← 连改权限都失败
+```
+
+**进了内存、存不下盘** —— 所以「添加成功」是真的，背屏不显示也是真的，重启后张数回到原样。
+同一目录里的 `widget.json` 属主正常、写得好好的，差别只在这一个文件上。
+
+怎么定案的：把它那份「导出日志」包解开，看 `appInfo.json` 的属主 + 那 6 MB 的
+`subscreencenter-app.log`，按路径统计失败次数 —— 19 次写失败**全部**是这一个文件。
+然后在开发机上把它 `chown root:root` + `chmod 644`，重启背屏服务，日志里立刻出现**一模一样**
+的报错；把属主/权限改回去，报错消失。
+
+修复只动属主/权限，**不动卡片清单内容**（用户已有的卡片要保住）。面板上就是
+「背屏卡片可写」这条 + 「修好卡片写入」按钮。
+
+顺带一个教训：这个文件是被 root 工具 / 备份还原 / 清理类模块改坏属主的 —— 这类
+「用户态状态文件被改坏」在越狱环境里很常见，而模块（root 权限）恰好能修。
+
 ## 真机验证记录
 
 开发机：小米 17 Pro Max（popsicle），OS4.0.0.44.XPBCNXM，

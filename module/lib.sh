@@ -175,6 +175,46 @@ theme_dir() {
     echo ""
 }
 
+# 背屏卡片状态文件的路径（config/ 或 logs/ 下）
+subscreen_state_file() {  # $1=文件名
+    _d=$(theme_dir)
+    [ -n "$_d" ] || return 1
+    for _p in "$_d/config/$1" "$_d/logs/$1"; do
+        [ -e "$_p" ] && { echo "$_p"; return 0; }
+    done
+    return 1
+}
+
+# 这个文件背屏应用写得进去吗：属主必须是应用自己，且属主有写位。
+#
+# 为什么这条值得单独查：真机上踩到过一个只有它才能解释的现象 —— 点「添加」提示成功、
+# 背屏却没有，且重启后条数回到原样。它的日志写得很清楚：
+#     insertApp: appInfo = LauncherAppInfo{mAppName='隐身模式'...}
+#     FileUtils - Write .../config/appInfo.json failed
+#     LauncherDataManager - SaveAppInfo, saved = false, size = 5
+# 也就是**进了内存、存不下盘**。根因是这个文件的属主不是应用（被 root 工具/备份
+# 还原动过），所以它既改不动权限（chmod 失败）也写不进去 —— 而同一个目录下的
+# widget.json 属主正常，写得好好的。
+subscreen_state_writable() {  # $1=文件路径
+    [ -f "$1" ] || return 1
+    _auid=$(stat -c '%u' /data/data/com.xiaomi.subscreencenter 2>/dev/null)
+    _ouid=$(stat -c '%u' "$1" 2>/dev/null)
+    _mode=$(stat -c '%a' "$1" 2>/dev/null)
+    [ -n "$_auid" ] && [ -n "$_ouid" ] && [ -n "$_mode" ] || return 1
+    [ "$_ouid" = "$_auid" ] || return 1
+    case "$_mode" in [2367]*) return 0 ;; *) return 1 ;; esac
+}
+
+# 只把「属主/权限」修对，不动内容 —— 用户的卡片清单要保住
+subscreen_state_fixperm() {  # $1=文件路径
+    _auid=$(stat -c '%u' /data/data/com.xiaomi.subscreencenter 2>/dev/null)
+    _agid=$(stat -c '%g' /data/data/com.xiaomi.subscreencenter 2>/dev/null)
+    [ -n "$_auid" ] || return 1
+    chown "$_auid:$_agid" "$1" 2>/dev/null || return 1
+    chmod 777 "$1" 2>/dev/null || return 1
+    subscreen_state_writable "$1"
+}
+
 # ---- 网络预算 --------------------------------------------------------------
 FETCH_CONNECT_TIMEOUT=6      # 单次连接超时（秒）
 FETCH_MAX_TIME=25            # 单文件总时长上限（秒），超时立即换下一个源

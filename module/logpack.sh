@@ -107,7 +107,22 @@ sec() { printf '\n================ %s ================\n' "$1"; }
         fi
     done
 
-    sec "6. 挂载与 SELinux"
+    sec "6. 背屏卡片状态文件（属主/权限）"
+    echo "这一节存在的理由：点「添加」会把卡片写进 appInfo.json；如果它的属主不是"
+    echo "背屏应用（被 root 工具/备份还原动过），就会「提示成功但存不下盘」。"
+    echo
+    _td=$(theme_dir)
+    if [ -n "$_td" ] && [ -d "$_td" ]; then
+        echo "背屏应用 uid：$(stat -c '%u' /data/data/com.xiaomi.subscreencenter 2>/dev/null)"
+        ls -l "$_td/config/" 2>&1 | head -10
+        echo
+        echo "-- 它自己的日志里跟写入有关的行（最多 8 行）--"
+        grep -aE "Write .* failed|saved = |insertApp|DeleteAppWidget" "$_td/logs/app.log" 2>/dev/null | tail -8
+    else
+        echo "（找不到 theme_magic 目录）"
+    fi
+
+    sec "7. 挂载与 SELinux"
     echo "-- rearscreen 相关挂载 --"
     mount 2>/dev/null | grep rearscreen || echo "（没有 rearscreen 挂载！）"
     echo
@@ -124,7 +139,7 @@ sec() { printf '\n================ %s ================\n' "$1"; }
     echo "-- metamodule（决定模块文件是否会被自动挂载）--"
     ls -d /data/adb/metamodule 2>&1 || echo "未安装"
 
-    sec "7. Root 方案与模块环境"
+    sec "8. Root 方案与模块环境"
     echo "-- 模块列表 --"
     ls /data/adb/modules/ 2>&1
     echo
@@ -138,10 +153,10 @@ sec() { printf '\n================ %s ================\n' "$1"; }
     echo "-- 本模块的 webroot --"
     ls -la "$MODDIR/webroot/" 2>&1
 
-    sec "8. 开机与操作日志"
+    sec "9. 开机与操作日志"
     cat "$LOGFILE" 2>/dev/null || echo "（无日志文件，说明阶段脚本没执行过）"
 
-    sec "9. 预设卡片清单（前 120 行）"
+    sec "10. 预设卡片清单（前 120 行）"
     head -c 4000 "$MARK" 2>/dev/null || echo "（读不到预设）"
 
     echo

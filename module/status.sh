@@ -445,7 +445,18 @@ if [ -f "$REG_FILE" ]; then
     rm -f "$REG_TMP"
     emit app.registry info "背屏卡片状态" \
         "背屏已添加 $REGN 张${REGNAMES:+（$REGNAMES）}；本模块预置的 $PRESETN 张里有 $ONSCREEN 张已在背屏上" \
-        "背屏的「已添加」清单由 subscreencenter 维护，和上面列出的预置卡片是两套状态。若「点添加提示成功、背屏却没变化」，导出日志时这一项会连同它的清单和日志一起打进去"
+        "背屏的「已添加」清单由 subscreencenter 维护，和上面列出的预置卡片是两套状态；导出日志时这一项会连同清单和日志一起打进去"
+    # 这个文件「存得下盘」吗 —— 属主不对就会「点添加提示成功、背屏没变化」，而且
+    # 重启后张数回到原样（内存里加了、盘上没写进去）。真机上就是这么坏的。
+    if subscreen_state_writable "$REG_FILE"; then
+        emit app.writable ok "背屏卡片可写" \
+            "appInfo.json 属主正确（$(stat -c '%u:%g %a' "$REG_FILE" 2>/dev/null)），添加的卡片存得下盘" ""
+    else
+        emit app.writable fail "背屏卡片可写" \
+            "appInfo.json 属主不对：现在是 $(stat -c '%u:%g %a' "$REG_FILE" 2>/dev/null)，背屏应用的 uid 是 $(stat -c '%u' /data/data/com.xiaomi.subscreencenter 2>/dev/null) —— 应用改不动、也写不进这个文件" \
+            "后果是「点添加提示成功、背屏却没变化」，重启后张数还会回到原样（它的日志里写着 SaveAppInfo, saved = false）。点下面的按钮把属主/权限改对即可，卡片清单内容不动" \
+            "" "fix_regperm"
+    fi
 else
     emit app.registry info "背屏卡片状态" "读不到 subscreencenter 的卡片清单" \
         "路径：${REG_FILE:-（未找到 theme_magic 目录）}；可能不是小米 ROM，或背屏服务还没初始化过"

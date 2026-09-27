@@ -26,7 +26,7 @@ step() { echo "· $*"; }
 step "校验模块文件"
 
 for f in module.prop lib.sh customize.sh inject.sh status.sh action.sh \
-         logpack.sh fetch.sh clear-reareye.sh fix-perms.sh fix-view.sh \
+         logpack.sh fetch.sh clear-reareye.sh fix-perms.sh fix-view.sh fix-regperm.sh \
          appcard.manifest appcard.catalog; do
     [ -f "module/$f" ] || fail "缺少 module/$f"
 done
