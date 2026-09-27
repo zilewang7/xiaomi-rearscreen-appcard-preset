@@ -113,19 +113,35 @@ xlog() {  # $1=来源 $2=消息
 }
 
 # ---------------------------------------------------------------- 单次抓取
+# 失败原因要留下来：状态页要能回答「为什么补不齐」，而不是只说「还差 8 个」。
+# 之前这里把 stderr 丢进 /dev/null，用户除了「还差 N 个」什么线索都没有 ——
+# 到底是连不上、还是被墙、还是校验失败，全看不出来。
+_FETCH_ERR=""
 _fetch() {  # $1=url $2=out
-    _has_budget || return 1
+    _FETCH_ERR=""
+    _has_budget || { _FETCH_ERR="时间预算用尽"; return 1; }
+
+    err=""
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout "$FETCH_CONNECT_TIMEOUT" --max-time "$FETCH_MAX_TIME" \
-             -o "$2" "$1" 2>/dev/null
+        err=$(curl -fsSL --connect-timeout "$FETCH_CONNECT_TIMEOUT" --max-time "$FETCH_MAX_TIME" \
+              -o "$2" "$1" 2>&1)
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -T "$FETCH_MAX_TIME" -O "$2" "$1" 2>/dev/null
+        err=$(wget -q -T "$FETCH_MAX_TIME" -O "$2" "$1" 2>&1)
     elif command -v busybox >/dev/null 2>&1; then
-        busybox wget -q -T "$FETCH_MAX_TIME" -O "$2" "$1" 2>/dev/null
+        err=$(busybox wget -q -T "$FETCH_MAX_TIME" -O "$2" "$1" 2>&1)
     else
+        _FETCH_ERR="没有 curl / wget / busybox"
         return 1
     fi
-    [ -s "$2" ]
+
+    [ -s "$2" ] && return 0
+
+    # 只留最有信息量的一行，日志才不会淹掉
+    _FETCH_ERR=$(printf '%s\n' "$err" | tr -d '\r' | grep -v '^[[:space:]]*$' | tail -n 1)
+    [ -n "$_FETCH_ERR" ] || _FETCH_ERR="无数据返回"
+    # 主机名单独记一份：镜像的报错往往又长又是 HTML，看主机名最快
+    _FETCH_HOST=$(printf '%s' "$1" | sed -n 's|^[a-z]*://\([^/]*\)/.*|\1|p')
+    return 1
 }
 
 _sha256() {  # $1=file
@@ -136,9 +152,17 @@ _sha256() {  # $1=file
 }
 
 # ---------------------------------------------------------------- 模板展开
+# {url}   = 直连地址（https://raw.githubusercontent.com/<repo>/<commit>/<路径>）
+# {upath} = 带上游子目录的路径（<UPSTREAM_PATH>/<路径>）
+# {path}  = 清单里的相对路径
+# {repo} {commit} = 上游仓库 / commit
+#
+# 注意 {upath} 和 {path} 名字像但不一样：上游把资源放在 preset/rear_preset/ 下，
+# 有些镜像（如 jsdelivr）要求把完整仓库内路径写进去，只给 {path} 会 404。
 _expand() {  # $1=模板 $2=相对路径
     printf '%s' "$1" \
-        | sed -e "s|{repo}|${UPSTREAM_REPO}|g" \
+        | sed -e "s|{upath}|${UPSTREAM_PATH}/$2|g" \
+              -e "s|{repo}|${UPSTREAM_REPO}|g" \
               -e "s|{commit}|${UPSTREAM_COMMIT}|g" \
               -e "s|{path}|$2|g" \
               -e "s|{url}|${RAW_BASE}/$2|g"
@@ -184,16 +208,20 @@ download() {  # $1=相对路径 $2=输出 $3=模块内置 mirrors.txt
     if _fetch "${RAW_BASE}/${rel}" "$out"; then
         return 0
     fi
+    direct_err="$_FETCH_ERR"
 
+    tried=0
     for tpl in $(_mirror_lines "$(_mirror_list "$bundled")"); do
         url=$(_expand "$tpl" "$rel")
         case "$url" in *'{'*) continue ;; esac
+        tried=$((tried + 1))
         if _fetch "$url" "$out"; then
             log "  已通过镜像获取：${url%%/https*}"
             return 0
         fi
     done
 
+    log "    ✗ ${rel}；直连：${direct_err:-未知}；${tried} 个镜像全失败"
     return 1
 }
 

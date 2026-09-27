@@ -144,6 +144,18 @@ elif [ "$READY" -lt "$TOTAL" ]; then
         "重启后会自动补齐；也可点「立即补齐」"
 fi
 
+# 补不齐的时候，必须能说出「为什么」。只说「还差 8 个」的话，用户和开发者都只能猜
+# —— 到底是没网、被墙、还是校验不过。所以把日志里最后那次失败的原因摘出来。
+if [ "${READY:-0}" -lt "${TOTAL:-0}" ] && [ -f "$INJ_LOG" ]; then
+    LASTFAIL=$(grep -F '✗' "$INJ_LOG" 2>/dev/null | tail -n 1 | sed 's/^.*✗ *//')
+    LASTRUN=$(grep -E 'fetch\.sh: 结束|暂未取到|下次开机再试' "$INJ_LOG" 2>/dev/null | tail -n 1)
+    if [ -n "$LASTFAIL" ]; then
+        emit res.whyy warn "补齐失败原因" \
+            "${LASTFAIL}${LASTRUN:+（${LASTRUN}）}" \
+            "说明连不上 GitHub，镜像也都没通：开代理或换成能访问的网络，然后点「立即补齐」；日志里能看到每个文件分别试过哪些源"
+    fi
+fi
+
 # 文件都在、但应用读不到 —— 这是「面板看着没问题、卡片就是不出现」的另一大元凶。
 # 注意这条检查必须用「别人能不能读」的判据，不能像 assets_progress 那样拿 root 去读：
 # root 读得到 0600 的文件，于是检查永远通过。
@@ -199,25 +211,49 @@ else
 fi
 
 # 上面所有检查都是「root 视角」。但应用有自己的 mount namespace（Android 给每个
-# 应用 unshare 一份），挂载如果发生在 zygote 分叉之后，应用那边根本看不到。
-# 所以最后真的进到应用进程的 namespace 里读一次 —— 这才是应用眼里的世界。
-# 顺带也能验 DAC：stat 用的是 root，验权限还得靠上面的 res.perm。
+# 应用 unshare 一份），挂载如果没进到应用那一份，应用读到的就是 ROM 原文件 ——
+# 而 root 视角一切正常。这是本项目最隐蔽的一类失效，所以必须验。
+#
+# 两种验法，先试不需要额外权限的那个：
+#   ① 读 /proc/<pid>/mountinfo，看挂载点上的 <root> 字段是不是本模块目录。
+#      只要进程看得见就能查，不依赖 nsenter 能不能用。
+#   ② nsenter 进它的 namespace 里 stat 一次。更硬，但某些 Root 方案 / 内核下进不去
+#      （社区那台 KernelSU 就是 ①可用、②进不去），所以只能当补充。
 PA_PID=$(pidof "$PA_PKG" 2>/dev/null | awk '{print $1}')
-if [ -n "$PA_PID" ] && command -v nsenter >/dev/null 2>&1; then
-    APP_INO=$(nsenter -t "$PA_PID" -m -- stat -c '%d:%i' "$MARK" 2>/dev/null)
-    SRC_INO2=$(stat -c '%d:%i' "$SRC_MARK" 2>/dev/null)
-    if [ -z "$APP_INO" ]; then
-        emit inj.appns warn "应用视角" "进不去应用进程的 namespace，无法确认应用看到的是哪份文件" \
-            "不影响使用；若卡片不出现，重启设备后本项会重新检测"
-    elif [ "$APP_INO" = "$SRC_INO2" ]; then
-        emit inj.appns ok "应用视角" "应用卡中心（pid $PA_PID）读到的就是本模块的文件" ""
-    else
-        emit inj.appns fail "应用视角" \
-            "应用卡中心读到的**不是**本模块的文件（应用 inode $APP_INO / 模块 inode $SRC_INO2）" \
-            "挂载没进到应用的 mount namespace：重启设备（挂载要在 zygote 之前完成）"
-    fi
-elif [ -z "$PA_PID" ]; then
+if [ -z "$PA_PID" ]; then
     emit inj.appns info "应用视角" "应用卡中心未运行，跳过（打开背屏后再检测）" ""
+else
+    APP_ROOT=""
+    MI=/proc/$PA_PID/mountinfo
+    if [ -r "$MI" ]; then
+        # 字段：<id> <parent> <maj:min> <root> <挂载点> <选项> … - <fstype> <源> <superopts>
+        APP_ROOT=$(awk '$5 == "/product/media/rearscreen" || $5 == "/system/media/rearscreen" { print $4; exit }' "$MI" 2>/dev/null)
+    fi
+
+    SRC_INO2=$(stat -c '%d:%i' "$SRC_MARK" 2>/dev/null)
+    APP_INO=$(nsenter -t "$PA_PID" -m -- stat -c '%d:%i' "$MARK" 2>/dev/null)
+
+    case "$APP_ROOT" in
+        *rearscreen_appcard_preset*)
+            emit inj.appns ok "应用视角" \
+                "应用卡中心（pid $PA_PID）的 mount namespace 里，$DST 挂的就是本模块" ""
+            ;;
+        "")
+            # 连 mountinfo 都读不出或没有这条挂载 —— 说实话，别猜
+            if [ -n "$APP_INO" ] && [ "$APP_INO" = "$SRC_INO2" ]; then
+                emit inj.appns ok "应用视角" "应用卡中心（pid $PA_PID）读到的就是本模块的文件" ""
+            else
+                emit inj.appns fail "应用视角" \
+                    "在应用卡中心（pid $PA_PID）的 mount namespace 里**找不到** $DST 的挂载 —— 它读到的是 ROM 原文件" \
+                    "重启设备；仍如此请导出日志反馈（这条是「一切正常但没卡片」最常见的成因）"
+            fi
+            ;;
+        *)
+            emit inj.appns fail "应用视角" \
+                "应用卡中心（pid $PA_PID）看到的 $DST 不是本模块（挂载源：$APP_ROOT）" \
+                "重启设备；仍如此请导出日志反馈"
+            ;;
+    esac
 fi
 
 if [ -f "$INJ_LOG" ]; then
@@ -288,6 +324,31 @@ if ps -A 2>/dev/null | grep -q "$PA_PKG"; then
         "刚刷完模块需重启手机，或点「重启应用卡中心」让它重新读取预设"
 else
     emit app.running info "应用卡中心进程" "未运行（打开背屏即会拉起）" ""
+fi
+
+# 「应用卡」这个功能本身有没有开。这两个开关不在的话，ROM 根本不显示应用卡这一栏，
+# 预设挂得再对也没用 —— 而它们跟本模块毫无关系，是 ROM/机型的功能位。
+# 社区里有人是靠手动 setprop 打开的，所以值得单独报一条。
+WIDGET_PROP=$(getprop persist.sys.app.widget.enable 2>/dev/null)
+WIDGET_SEC=$(settings get secure subscreen_app_widget_enable 2>/dev/null)
+case "$WIDGET_PROP" in
+    true) WP_OK=1 ;;
+    *)    WP_OK=0 ;;
+esac
+case "$WIDGET_SEC" in
+    1) WS_OK=1 ;;
+    *) WS_OK=0 ;;
+esac
+if [ "$WP_OK" = 1 ] && [ "$WS_OK" = 1 ]; then
+    emit app.widget ok "应用卡功能开关" "已开启（persist.sys.app.widget.enable=true，subscreen_app_widget_enable=1）" ""
+elif [ "$WP_OK" = 0 ] && [ "$WS_OK" = 0 ]; then
+    emit app.widget fail "应用卡功能开关" \
+        "两项都没开：persist.sys.app.widget.enable=${WIDGET_PROP:-（空）}，subscreen_app_widget_enable=${WIDGET_SEC:-（空）}" \
+        "背屏不会显示应用卡这一栏，与预设无关：用 root 执行 setprop persist.sys.app.widget.enable true 和 settings put secure subscreen_app_widget_enable 1，然后重启"
+else
+    emit app.widget warn "应用卡功能开关" \
+        "只开了一项：persist.sys.app.widget.enable=${WIDGET_PROP:-（空）}，subscreen_app_widget_enable=${WIDGET_SEC:-（空）}" \
+        "建议两项都开：setprop persist.sys.app.widget.enable true；settings put secure subscreen_app_widget_enable 1"
 fi
 
 # ============================================================ 8. 结论

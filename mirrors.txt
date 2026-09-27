@@ -14,4 +14,4 @@ https://ghproxy.net/{url}
 https://gh-proxy.com/{url}
 https://ghfast.top/{url}
 https://gh.xxooo.cf/{url}
-https://cdn.jsdelivr.net/gh/{repo}@{commit}/{path}
+https://cdn.jsdelivr.net/gh/{repo}@{commit}/{upath}
