@@ -415,6 +415,42 @@ else
         "建议两项都开：setprop persist.sys.app.widget.enable true；settings put secure subscreen_app_widget_enable 1"
 fi
 
+# 背屏上「已添加的卡片」是 ROM 自己维护的一份清单（subscreencenter 的 appInfo.json），
+# 跟应用卡中心列出的（预置 JSON 里的）卡片是两回事。两边对不上时，表现就是
+# 「列表里有、点添加提示成功、背屏却没变化」—— 这条把它摆到台面上，省得拿日志猜。
+THEME_DIR=$(theme_dir)
+REG_FILE="$THEME_DIR/config/appInfo.json"
+if [ -f "$REG_FILE" ]; then
+    REGN=$(grep -o '"resId"' "$REG_FILE" 2>/dev/null | wc -l | tr -d ' ')
+    REGN=${REGN:-0}
+    # appInfo.json 里的 appName 是**又转义了一层**的 JSON 字符串
+    # （形如 "appName":"{\"zh_CN\":\"音乐\",...}"），所以先反转义再取名字，
+    # 否则一个都匹配不上（真机踩过：显示「0 张已在背屏上」，其实有 3 张）。
+    REG_TMP="/data/local/tmp/.appcard_reg_$$.json"
+    sed 's/\\"/"/g' "$REG_FILE" > "$REG_TMP" 2>/dev/null
+    REGNAMES=$(grep -o '"zh_CN":"[^"]*"' "$REG_TMP" 2>/dev/null \
+               | sed 's/^"zh_CN":"//; s/"$//' | tr '\n' ' ')
+    # 注意：tr 是按字节替换的，别用多字节分隔符（'、' 会被切成半个字符，面板上显示乱码）
+    REGNAMES=${REGNAMES% }
+    ONSCREEN=0
+    PRESETN=0
+    if [ -n "$CATALOG" ]; then
+        while IFS='|' read -r cat name pkg minver respath; do
+            case "$cat" in ''|\#*) continue ;; esac
+            [ -n "$name" ] || continue
+            PRESETN=$((PRESETN + 1))
+            grep -qF "\"$name\"" "$REG_TMP" 2>/dev/null && ONSCREEN=$((ONSCREEN + 1))
+        done < "$CATALOG"
+    fi
+    rm -f "$REG_TMP"
+    emit app.registry info "背屏卡片状态" \
+        "背屏已添加 $REGN 张${REGNAMES:+（$REGNAMES）}；本模块预置的 $PRESETN 张里有 $ONSCREEN 张已在背屏上" \
+        "背屏的「已添加」清单由 subscreencenter 维护，和上面列出的预置卡片是两套状态。若「点添加提示成功、背屏却没变化」，导出日志时这一项会连同它的清单和日志一起打进去"
+else
+    emit app.registry info "背屏卡片状态" "读不到 subscreencenter 的卡片清单" \
+        "路径：${REG_FILE:-（未找到 theme_magic 目录）}；可能不是小米 ROM，或背屏服务还没初始化过"
+fi
+
 # ============================================================ 8. 结论
 OKN=$(grep -c '^level=ok$'   "$OUT" 2>/dev/null)
 WARN=$(grep -c '^level=warn$' "$OUT" 2>/dev/null)

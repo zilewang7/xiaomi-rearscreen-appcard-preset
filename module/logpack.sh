@@ -150,10 +150,42 @@ sec() { printf '\n================ %s ================\n' "$1"; }
 
 SIZE=$(stat -c '%s' "$REPORT" 2>/dev/null || echo 0)
 
-if [ -f "$REPORT" ] && [ "$SIZE" -gt 100 ] 2>/dev/null; then
-    # 最后一行必须是路径 —— WebUI 靠它拿给用户看
-    echo "$REPORT"
-else
+if [ ! -f "$REPORT" ] || [ "$SIZE" -le 100 ] 2>/dev/null; then
     echo "FAILED"
+    exit 0
+fi
+
+# 再把 ROM 侧「背屏卡片状态」一起打包。为什么必须有这几样：
+#   应用卡中心列出的是**预置 JSON** 里的卡片，而背屏真正显示什么由 subscreencenter
+#   自己的状态文件决定 —— 两边不一致时就会出现「列表里有、点添加提示成功、背屏却没
+#   变化」这种只有拿到现场文件才能定案的问题。
+#     appInfo.json                   已添加的卡片注册表（点「添加」= 往这里 insertApp 一条）
+#     widget.json                    背屏布局
+#     subscreencenter-app.log        它自己的日志（GetAppWidget / insertApp / DeleteAppWidget）
+# 合成一个 tar.gz，用户只需要发一个文件。
+PKG="$OUTDIR/appcard-back-$STAMP.tar.gz"
+TMPD="/data/local/tmp/appcard_pack.$$"
+mkdir -p "$TMPD"
+cp "$REPORT" "$TMPD/" 2>/dev/null
+TD=$(theme_dir)
+if [ -n "$TD" ]; then
+    cp "$TD/config/appInfo.json" "$TMPD/appInfo.json"            2>/dev/null
+    cp "$TD/config/widget.json"  "$TMPD/widget.json"             2>/dev/null
+    cp "$TD/logs/app.log"        "$TMPD/subscreencenter-app.log" 2>/dev/null
+fi
+PKG_OK=0
+if ( cd "$TMPD" && tar czf "$PKG" . ) >/dev/null 2>&1; then
+    [ "$(stat -c '%s' "$PKG" 2>/dev/null || echo 0)" -gt 200 ] && PKG_OK=1
+fi
+rm -rf "$TMPD"
+
+if [ "$PKG_OK" -eq 1 ]; then
+    echo "已导出："
+    echo "  · 卡片状态包（优先发这个，里面含诊断文本+背屏卡片清单+日志）：$PKG"
+    echo "  · 诊断文本（也可以单独发）：$REPORT"
+    # 最后一行必须是路径 —— WebUI 靠它拿给用户看；优先给信息更全的那个
+    echo "$PKG"
+else
+    echo "$REPORT"
 fi
 exit 0

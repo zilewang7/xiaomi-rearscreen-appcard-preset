@@ -251,6 +251,22 @@ ROM 原文件 —— 状态页却全绿。这是本项目最隐蔽的一类失�
 同一个「视角」思路还解释了另一类反馈：`inject.sh` 里也加了同样的判断 ——
 如果脚本自己所在的 namespace 不是 init 的，它会**主动往 init 那一份再挂一次**。
 
+## 预置卡片和「背屏已添加的卡片」是两套状态
+
+应用卡中心**列出**的卡片来自我们挂上去的预置 JSON；而背屏**真正显示**什么，由
+subscreencenter 自己维护的一份清单决定：
+
+```
+/data/system/theme_magic/users/0/subscreencenter/config/appInfo.json   已添加的卡片注册表
+/data/system/theme_magic/users/0/subscreencenter/config/widget.json    背屏布局
+/data/system/theme_magic/users/0/subscreencenter/logs/app.log          它自己的日志
+```
+
+点「添加」时会调 `insertApp` 往 `appInfo.json` 里写一条 —— 也就是说**这两套状态可能对不上**，
+表现就是「列表里有、点添加提示成功、背屏却没变化」。所以状态页专门有一条
+`app.registry` 把两边摆出来（背屏已添加几张、预置的几张在上面、分别是哪些卡），
+导出日志时这几个文件也一起打包，不用再让用户手工找文件。
+
 ## 真机验证记录
 
 开发机：小米 17 Pro Max（popsicle），OS4.0.0.44.XPBCNXM，

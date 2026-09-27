@@ -158,6 +158,23 @@ ns_bind() {  # $1=pid $2=src $3=dst
 # zygote 的 pid（应用都是它的子进程）
 ns_zygotes() { pidof zygote64 2>/dev/null; pidof zygote 2>/dev/null; }
 
+# ---- 背屏卡片系统的「状态文件」 ---------------------------------------------
+# 应用卡中心列出的卡片来自预置 JSON（我们挂上去的那个文件），但**背屏真正显示什么**
+# 由 subscreencenter 自己的状态文件决定：
+#   config/appInfo.json  —— 已添加的卡片注册表（点「添加」就是往这里 insertApp 一条）
+#   config/widget.json   —— 背屏上的组件布局
+#   logs/app.log         —— 它自己的日志（含 GetAppWidget / insertApp / DeleteAppWidget）
+# 两者不一致时就会出现「列表里有、点添加提示成功、背屏却没变化」。这几个文件都在
+# /data/system 下，模块不能改（改了会跟 ROM 的状态打架），只读出来做证据。
+theme_dir() {
+    for _u in 0 "$(am get-current-user 2>/dev/null)"; do
+        [ -n "$_u" ] || continue
+        _d="/data/system/theme_magic/users/$_u/subscreencenter"
+        [ -d "$_d" ] && { echo "$_d"; return 0; }
+    done
+    echo ""
+}
+
 # ---- 网络预算 --------------------------------------------------------------
 FETCH_CONNECT_TIMEOUT=6      # 单次连接超时（秒）
 FETCH_MAX_TIME=25            # 单文件总时长上限（秒），超时立即换下一个源
