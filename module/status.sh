@@ -214,46 +214,50 @@ fi
 # 应用 unshare 一份），挂载如果没进到应用那一份，应用读到的就是 ROM 原文件 ——
 # 而 root 视角一切正常。这是本项目最隐蔽的一类失效，所以必须验。
 #
-# 两种验法，先试不需要额外权限的那个：
-#   ① 读 /proc/<pid>/mountinfo，看挂载点上的 <root> 字段是不是本模块目录。
-#      只要进程看得见就能查，不依赖 nsenter 能不能用。
-#   ② nsenter 进它的 namespace 里 stat 一次。更硬，但某些 Root 方案 / 内核下进不去
-#      （社区那台 KernelSU 就是 ①可用、②进不去），所以只能当补充。
-PA_PID=$(pidof "$PA_PKG" 2>/dev/null | awk '{print $1}')
-if [ -z "$PA_PID" ]; then
-    emit inj.appns info "应用视角" "应用卡中心未运行，跳过（打开背屏后再检测）" ""
-else
-    APP_ROOT=""
-    MI=/proc/$PA_PID/mountinfo
-    if [ -r "$MI" ]; then
-        # 字段：<id> <parent> <maj:min> <root> <挂载点> <选项> … - <fstype> <源> <superopts>
-        APP_ROOT=$(awk '$5 == "/product/media/rearscreen" || $5 == "/system/media/rearscreen" { print $4; exit }' "$MI" 2>/dev/null)
+# 查法：读 /proc/<pid>/mountinfo，看挂载点上的 <root> 字段是不是本模块目录。
+#   12364 12363 254:62 /adb/modules/…/product/media/rearscreen /product/media/rearscreen …
+#                    ^^^^^^^^^^ 第 4 个字段 —— 是它，就说明这个进程看到的是本模块。
+# 不用额外权限，只要进程看得见就能查。nsenter 在某些 Root 方案/内核上进不去
+# （社区那台 KernelSU 就是），所以只当补充，不做主判据。
+#
+# 三个应用都要查：REAREye 的 TARGET_PACKAGES 就是这三个，说明读这份预设的不止一个 ——
+# 背屏界面由 subscreencenter 渲染，主题商店也会读，只查应用卡中心会漏。
+APPNS_LIST="com.miui.personalassistant com.xiaomi.subscreencenter com.android.thememanager"
+APPNS_DETAIL=""
+APPNS_LEVEL=ok
+APPNS_BAD=""
+for _pkg in $APPNS_LIST; do
+    _short=${_pkg##*.}
+    _pids=$(pidof "$_pkg" 2>/dev/null)
+    if [ -z "$_pids" ]; then
+        APPNS_DETAIL="$APPNS_DETAIL${_short}(未运行) "
+        continue
     fi
-
-    SRC_INO2=$(stat -c '%d:%i' "$SRC_MARK" 2>/dev/null)
-    APP_INO=$(nsenter -t "$PA_PID" -m -- stat -c '%d:%i' "$MARK" 2>/dev/null)
-
-    case "$APP_ROOT" in
-        *rearscreen_appcard_preset*)
-            emit inj.appns ok "应用视角" \
-                "应用卡中心（pid $PA_PID）的 mount namespace 里，$DST 挂的就是本模块" ""
-            ;;
-        "")
-            # 连 mountinfo 都读不出或没有这条挂载 —— 说实话，别猜
-            if [ -n "$APP_INO" ] && [ "$APP_INO" = "$SRC_INO2" ]; then
-                emit inj.appns ok "应用视角" "应用卡中心（pid $PA_PID）读到的就是本模块的文件" ""
-            else
-                emit inj.appns fail "应用视角" \
-                    "在应用卡中心（pid $PA_PID）的 mount namespace 里**找不到** $DST 的挂载 —— 它读到的是 ROM 原文件" \
-                    "重启设备；仍如此请导出日志反馈（这条是「一切正常但没卡片」最常见的成因）"
-            fi
-            ;;
-        *)
-            emit inj.appns fail "应用视角" \
-                "应用卡中心（pid $PA_PID）看到的 $DST 不是本模块（挂载源：$APP_ROOT）" \
-                "重启设备；仍如此请导出日志反馈"
-            ;;
+    _verdict="miss"
+    for _p in $_pids; do
+        _root=$(awk '$5 == "/product/media/rearscreen" || $5 == "/system/media/rearscreen" { print $4; exit }' \
+                "/proc/$_p/mountinfo" 2>/dev/null)
+        case "$_root" in
+            *rearscreen_appcard_preset*) _verdict="ok"; break ;;
+            "") ;;
+            *) _verdict="other" ;;
+        esac
+    done
+    case "$_verdict" in
+        ok)    APPNS_DETAIL="$APPNS_DETAIL${_short} ✓ " ;;
+        other) APPNS_DETAIL="$APPNS_DETAIL${_short} ✗(挂的不是本模块) "
+               APPNS_LEVEL=fail; APPNS_BAD="$APPNS_BAD$_short " ;;
+        *)     APPNS_DETAIL="$APPNS_DETAIL${_short} ✗(namespace 里没有这个挂载) "
+               APPNS_LEVEL=fail; APPNS_BAD="$APPNS_BAD$_short " ;;
     esac
+done
+
+if [ "$APPNS_LEVEL" = ok ]; then
+    emit inj.appns ok "应用视角" "读到本模块：${APPNS_DETAIL% }" ""
+else
+    emit inj.appns fail "应用视角" \
+        "这几个应用的 mount namespace 里看不到本模块：${APPNS_BAD% }（${APPNS_DETAIL% }）" \
+        "背屏读到的是 ROM 原文件，卡片自然不出现：重启设备；仍如此请导出日志反馈（这是「一切正常但没卡片」最常见的成因）"
 fi
 
 if [ -f "$INJ_LOG" ]; then
